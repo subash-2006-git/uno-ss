@@ -12,12 +12,21 @@ const TURN_CHOICES = [
   { s: 0, label: 'No limit' },
 ];
 
+const ROUND_CHOICES = [
+  { r: 1, label: '1' },
+  { r: 3, label: '3' },
+  { r: 5, label: '5' },
+  { r: 10, label: '10' },
+  { r: 0, label: 'To 500' },
+];
+
 export default function Lobby({ room, me, act, leave, chatApi, emotes }) {
   const isHost = room.hostId === me;
   const isSpectator = room.role === 'spectator';
   const { min, max } = room.limits;
   const n = room.members.length;
   const turnSeconds = room.settings?.turnSeconds ?? 30;
+  const rounds = room.settings?.rounds ?? 0;
   return (
     <main className="home page">
       <FloatingCards count={6} />
@@ -52,6 +61,20 @@ export default function Lobby({ room, me, act, leave, chatApi, emotes }) {
             ))}</p>
           </div>
         )}
+
+        <h3>Match length</h3>
+        {isHost ? (
+          <div className="seg five" role="group" aria-label="Number of rounds">
+            {ROUND_CHOICES.map((c) => (
+              <button key={c.r} className={rounds === c.r ? 'on' : ''} aria-pressed={rounds === c.r} onClick={() => act('set_settings', { rounds: c.r })}>{c.label}</button>
+            ))}
+          </div>
+        ) : <p className="muted">{rounds ? `${rounds} round${rounds > 1 ? 's' : ''}` : 'First to 500 points'}</p>}
+        <p className="muted small left">
+          {rounds
+            ? `Play exactly ${rounds} round${rounds > 1 ? 's' : ''}. The highest total wins; a tie goes to whoever won more rounds.`
+            : 'Keep playing rounds until someone reaches 500 points.'}
+        </p>
 
         <h3>Time per turn</h3>
         {isHost ? (

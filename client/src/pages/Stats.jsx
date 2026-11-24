@@ -39,7 +39,7 @@ function Ring({ pct, animate }) {
     <div className="ring" role="img" aria-label={`Win rate ${pct} percent`}>
       <svg viewBox="0 0 100 100" width="132" height="132">
         <circle cx="50" cy="50" r="42" className="ring-bg" />
-        <circle cx="50" cy="50" r="42" className="ring-fg" strokeDasharray={`${(shown / 100) * C} ${C}`} transform="rotate(-90 50 50)" />
+        {pct > 0 && <circle cx="50" cy="50" r="42" className="ring-fg" strokeDasharray={`${(shown / 100) * C} ${C}`} transform="rotate(-90 50 50)" />}
       </svg>
       <div className="ring-text"><b>{count}%</b><span>win rate</span></div>
     </div>

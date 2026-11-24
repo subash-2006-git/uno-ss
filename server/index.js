@@ -14,7 +14,8 @@ const PORT = process.env.PORT || 3001;
 const ABSENT_MS = 8000;      // auto-move for a disconnected player after this long
 const MAX_MISSED = 3;        // ...and drop them after this many auto-moves in a row
 const TURN_CHOICES = [0, 15, 30, 60]; // seconds per turn the host can pick; 0 = no limit
-const DEFAULT_SETTINGS = { turnSeconds: 30 };
+const ROUND_CHOICES = [0, 1, 3, 5, 10]; // match length the host can pick; 0 = play until someone reaches 500
+const DEFAULT_SETTINGS = { turnSeconds: 30, rounds: 0 };
 
 const app = express();
 app.set('trust proxy', 1); // behind Render's proxy: real client IP for the login lockout
@@ -308,11 +309,15 @@ io.on('connection', (socket) => {
     emitRoom(room, 'chat_msg', say(p, room, 'emote', { emote }));
   });
 
-  on('set_settings', {}, (p, room, { turnSeconds }) => {
+  // Either setting can be sent on its own; both are validated before anything is applied.
+  on('set_settings', {}, (p, room, { turnSeconds, rounds }) => {
     if (room.hostId !== p.id) return { ok: false, error: 'Only the host can change settings' };
     if (room.status !== 'lobby') return { ok: false, error: 'Settings are locked once the game starts' };
-    if (!TURN_CHOICES.includes(turnSeconds)) return { ok: false, error: 'Invalid turn time' };
-    room.settings.turnSeconds = turnSeconds;
+    if (turnSeconds === undefined && rounds === undefined) return { ok: false, error: 'Nothing to change' };
+    if (turnSeconds !== undefined && !TURN_CHOICES.includes(turnSeconds)) return { ok: false, error: 'Invalid turn time' };
+    if (rounds !== undefined && !ROUND_CHOICES.includes(rounds)) return { ok: false, error: 'Invalid number of rounds' };
+    if (turnSeconds !== undefined) room.settings.turnSeconds = turnSeconds;
+    if (rounds !== undefined) room.settings.rounds = rounds;
     commit(room);
   });
 
@@ -323,7 +328,7 @@ io.on('connection', (socket) => {
     if (room.hostId !== p.id) return { ok: false, error: 'Only the host can start' };
     if (room.status !== 'lobby') return { ok: false, error: 'Already started' };
     if (room.members.length < U.MIN_PLAYERS) return { ok: false, error: `Need at least ${U.MIN_PLAYERS} players` };
-    room.game = U.createGame(room.members);
+    room.game = U.createGame(room.members, Math.random, { maxRounds: room.settings.rounds });
     room.status = 'playing';
     room.missed = {};
     commit(room);

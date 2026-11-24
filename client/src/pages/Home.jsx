@@ -26,7 +26,7 @@ export default function Home({ user, act, logout, openAdmin, openStats, notify }
         <span className="me-chip"><Avatar name={user.username} size={30} /> <b>{user.username}</b>{user.isAdmin ? <em className="adminbadge">admin</em> : null}</span>
         <span>
           <SettingsButton />
-          <button className="ghost iconbtn" onClick={openStats}><Icon name="chart" /> <span className="hide-sm">My stats</span></button>
+          <button className="ghost iconbtn" onClick={openStats} aria-label="My stats"><Icon name="chart" /> <span className="hide-sm">My stats</span></button>
           {user.isAdmin && <button className="ghost" onClick={openAdmin}>Manage users</button>}
           <button className="ghost" onClick={logout}>Log out</button>
         </span>

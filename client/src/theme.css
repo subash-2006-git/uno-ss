@@ -45,7 +45,7 @@ input:focus { border-color: var(--accent); }
 .panel { padding: 20px; }
 .home { position: relative; }
 .page { animation: pageIn .45s ease-out; }
-.page > *:not(.floaters) { position: relative; z-index: 1; }
+.page > *:not(.floaters) { position: relative; } /* above the floating cards, without creating stacking contexts */
 
 /* ---------- logo ---------- */
 .logo { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; font-size: inherit;
@@ -143,6 +143,9 @@ button.catch { border: 0; }
 .timer.urgent .timerbar i { background: linear-gradient(90deg, #c4161c, #ff6b5e); }
 
 /* ---------- lobby, admin, modals ---------- */
+.seg.five { grid-template-columns: repeat(4, 1fr) 1.8fr; }
+.seg.five button { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.seg button[aria-pressed='true'] { box-shadow: 0 0 0 2px rgba(255, 194, 51, .35); }
 .members li { display: flex; align-items: center; gap: 10px; justify-content: flex-start; background: rgba(0, 0, 0, .28); }
 .members .mname { flex: 1; font-weight: 700; }
 .members li.away { opacity: .55; }

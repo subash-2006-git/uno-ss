@@ -86,7 +86,7 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
     <main className={`game ${shake ? 'shake' : ''}`}>
       <header className="topbar">
         <span className="roomtag">
-          <Icon name="users" size={16} /> {room.code} <em>· Round {g.round}</em>
+          <Icon name="users" size={16} /> {room.code} <em>· Round {g.round}{g.maxRounds ? ` of ${g.maxRounds}` : ''}{g.maxRounds && g.round === g.maxRounds ? ' (final)' : ''}</em>
           {room.spectators.length > 0 && <span className="watchers" title="Spectators"><Icon name="eye" size={15} /> {room.spectators.length}</span>}
         </span>
         <span className="topright">
@@ -212,7 +212,14 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
                 <p className="points">+{g.roundResult.points} points</p>
               </>
             )}
-            <Scoreboard players={g.players} target={room.limits.target} meId={me} />
+            <Scoreboard players={g.players} target={g.maxRounds ? Math.max(1, ...g.players.map((p) => p.score)) : room.limits.target} meId={me} />
+            {g.phase === 'roundOver' && (
+              <p className="muted small">
+                {g.maxRounds
+                  ? (g.round === g.maxRounds - 1 ? 'The next round is the final round' : `${g.maxRounds - g.round} rounds to go`)
+                  : `First to ${room.limits.target} points wins`}
+              </p>
+            )}
             {g.phase === 'roundOver' && waitingNames.length > 0 && <p className="chip joining">Joining now: {waitingNames.join(', ')}</p>}
             {g.phase === 'roundOver' && !isSpectator && <button className="primary" onClick={() => act('next_round')}>Next round</button>}
             {g.phase === 'roundOver' && isSpectator && (

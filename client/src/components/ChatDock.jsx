@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Icon from './Icon.jsx';
 import { EMOTES, EMOTE_LABELS, nameColor } from '../emotes.js';
 
@@ -39,6 +40,13 @@ export default function ChatButton({ api, act }) {
     if (open) list.current?.scrollTo({ top: list.current.scrollHeight });
   }, [open, chat.length]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, setOpen]);
+
   const submit = async (e) => {
     e.preventDefault();
     const t = text.trim();
@@ -54,7 +62,7 @@ export default function ChatButton({ api, act }) {
         <Icon name="chat" />
         {unread > 0 && <span className="badge-dot">{unread > 9 ? '9+' : unread}</span>}
       </button>
-      {open && (
+      {open && createPortal(
         <aside className="chat-drawer" role="dialog" aria-label="Chat">
           <header>
             <h3>Chat</h3>
@@ -74,7 +82,8 @@ export default function ChatButton({ api, act }) {
             <input value={text} maxLength={120} onChange={(e) => setText(e.target.value)} placeholder="Say something…" aria-label="Message" autoComplete="off" />
             <button className="primary iconbtn" disabled={!text.trim()} aria-label="Send"><Icon name="send" /></button>
           </form>
-        </aside>
+        </aside>,
+        document.body,
       )}
     </>
   );

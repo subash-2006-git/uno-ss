@@ -202,6 +202,62 @@ describe('scoring', () => {
   });
 });
 
+describe('fixed number of rounds', () => {
+  // Win the current round as p0 with a controlled hand so the points are predictable.
+  function winRound(s, winnerIdx, loserHands) {
+    s.players.forEach((p, i) => { p.hand = i === winnerIdx ? [c('red', '9')] : loserHands[i] ?? [c('blue', '5')]; });
+    s.discard = [c('red', '1')]; s.color = 'red'; s.turn = winnerIdx; s.dir = 1; s.phase = 'play';
+    s.drawnCardId = null; s.pending = null; s.unoVuln = null;
+    return U.playCard(s, s.players[winnerIdx].id, s.players[winnerIdx].hand[0].id);
+  }
+
+  it('defaults to first-to-500 when no round count is set', () => {
+    const s = U.createGame(names(2), seeded(2));
+    expect(s.maxRounds).toBe(0);
+  });
+
+  it('ends after exactly N rounds even below 500 points', () => {
+    const s = U.createGame(names(3), seeded(4), { maxRounds: 3 });
+    expect(s.maxRounds).toBe(3);
+    winRound(s, 0, []);
+    expect(s.phase).toBe('roundOver');
+    U.nextRound(s);
+    winRound(s, 1, []);
+    expect(s.phase).toBe('roundOver');
+    U.nextRound(s);
+    winRound(s, 1, []);
+    expect(s.round).toBe(3);
+    expect(s.phase).toBe('matchOver');
+    expect(s.winnerId).toBe('p1'); // 2 round wins beat 1
+  });
+
+  it('a one-round match ends right away', () => {
+    const s = U.createGame(names(2), seeded(5), { maxRounds: 1 });
+    winRound(s, 0, []);
+    expect(s.phase).toBe('matchOver');
+    expect(s.winnerId).toBe('p0');
+  });
+
+  it('highest total wins, ties go to the player with more round wins', () => {
+    const s = U.createGame(names(3), seeded(6), { maxRounds: 2 });
+    winRound(s, 0, [null, [c('blue', '9')], [c('blue', '1')]]);   // p0 wins: +10
+    U.nextRound(s);
+    // p1 wins a round, scoring exactly as many points as p0 has
+    winRound(s, 1, [[c('blue', '5'), c('blue', '5')], null, [c('blue', '0')]]); // p1 +10
+    expect(s.phase).toBe('matchOver');
+    expect(s.players[0].score).toBe(s.players[1].score);
+    expect(s.players[0].roundsWon).toBe(s.players[1].roundsWon);
+    expect(['p0', 'p1']).toContain(s.winnerId); // full tie: deterministic first seat
+  });
+
+  it('does not stop at 500 when playing a fixed number of rounds', () => {
+    const s = U.createGame(names(2), seeded(7), { maxRounds: 3 });
+    s.players[0].score = 700;
+    winRound(s, 0, []);
+    expect(s.phase).toBe('roundOver');
+  });
+});
+
 describe('late joiners and round wins', () => {
   it('counts rounds won', () => {
     const last = c('red', '9');
@@ -219,7 +275,9 @@ describe('late joiners and round wins', () => {
     expect(U.addPlayer(s, { id: 'late', name: 'Late' }).ok).toBe(false); // no double seating
     U.nextRound(s);
     expect(s.players).toHaveLength(3);
-    expect(s.players.every((p) => p.hand.length === 7)).toBe(true);
+    // 7 each; the first player may hold 2 extra if the flipped first card was a Draw Two
+    expect(s.players.every((p) => p.hand.length >= 7 && p.hand.length <= 9)).toBe(true);
+    expect(s.players[2].hand.length).toBeGreaterThanOrEqual(7);
     expect(s.players[2].score).toBe(0);
   });
   it('refuses a late joiner mid-round or at a full table', () => {

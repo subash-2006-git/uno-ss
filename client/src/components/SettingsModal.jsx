@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { updateSettings, useSettings } from '../settings.js';
 import { play } from '../sound.js';
 import { useLatency } from '../hooks.js';
@@ -15,7 +16,14 @@ function SettingsPanel({ onClose }) {
   const ping = useLatency(true, 4000);
   const quality = ping == null ? '…' : ping < 120 ? 'good' : ping < 350 ? 'ok' : 'slow';
 
-  return (
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Rendered at the top of <body> so no parent's stacking context can trap it underneath the page.
+  return createPortal(
     <div className="modal-bg" onClick={onClose}>
       <div className="modal settings" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
         <h3>Settings</h3>
@@ -61,7 +69,8 @@ function SettingsPanel({ onClose }) {
 
         <button className="primary" onClick={onClose}>Done</button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

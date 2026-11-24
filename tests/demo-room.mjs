@@ -53,7 +53,8 @@ function think(bot) {
   if (g.phase === 'matchOver' || mover !== bot.id) return;
   bot.busy = true;
   setTimeout(async () => {
-    const v = bot.room.game;
+    const v = bot.room?.game;
+    if (!v) { bot.busy = false; return; } // the room changed under us (bot moved to another room)
     if (v.phase === 'challenge') await send(bot.socket, 'challenge', { accept: Math.random() < 0.7 });
     else {
       const ok = v.hand.filter((c) => isPlayable(c, v.top, v.color) && (v.drawnCardId == null || c.id === v.drawnCardId));
@@ -61,21 +62,26 @@ function think(bot) {
         const card = ok.find((c) => c.color !== 'wild') ?? ok[0];
         const color = ['red', 'yellow', 'green', 'blue'][Math.floor(Math.random() * 4)];
         await send(bot.socket, 'play_card', { cardId: card.id, color });
-        if (v.hand.length === 2) await send(bot.socket, 'call_uno');
+        if (v.hand.length === 2 && !process.env.NO_UNO) await send(bot.socket, 'call_uno'); // NO_UNO=1: bots forget, so Catch! can be tested
       } else if (v.drawnCardId != null) await send(bot.socket, 'pass_turn');
       else await send(bot.socket, 'draw_card');
     }
     bot.busy = false;
     think(bot);
-  }, THINK_MS + Math.random() * 800);
+  }, THINK_MS + Math.random() * Number(process.env.JITTER_MS ?? 800));
 }
 
-await send(bots[0].socket, 'create_room');
-const code = bots[0].room.code;
-for (const b of bots.slice(1)) await send(b.socket, 'join_room', { code });
-await send(bots[0].socket, 'set_settings', { turnSeconds: 60 });
-console.log(`ROOM ${code}  | login: ${DEMO.username} / ${DEMO.password}`);
-await send(bots[0].socket, 'start_game');
+// JOIN=ABCDE: the bots just join a room you created (so you stay host and press Start yourself).
+if (process.env.JOIN) {
+  for (const b of bots) console.log(b.name, 'join', (await send(b.socket, 'join_room', { code: process.env.JOIN })).ok);
+} else {
+  await send(bots[0].socket, 'create_room');
+  const code = bots[0].room.code;
+  for (const b of bots.slice(1)) await send(b.socket, 'join_room', { code });
+  await send(bots[0].socket, 'set_settings', { turnSeconds: 60 });
+  console.log(`ROOM ${code}  | login: ${DEMO.username} / ${DEMO.password}`);
+  await send(bots[0].socket, 'start_game');
+}
 
 // Bots chat and react now and then.
 const lines = ['gl hf', 'nice one!', 'ha, did not see that coming', 'uno incoming...', 'who is winning?'];

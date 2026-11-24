@@ -90,7 +90,8 @@ function giveCards(s, idx, count, rng) {
 
 /* ---------- game setup ---------- */
 
-export function createGame(players, rng = Math.random) {
+// opts.maxRounds: play exactly this many rounds (highest total wins). 0 / unset: first to WINNING_SCORE.
+export function createGame(players, rng = Math.random, opts = {}) {
   if (players.length < MIN_PLAYERS || players.length > MAX_PLAYERS) {
     throw new Error(`UNO needs ${MIN_PLAYERS}-${MAX_PLAYERS} players`);
   }
@@ -98,7 +99,7 @@ export function createGame(players, rng = Math.random) {
     players: players.map((p) => ({ id: p.id, name: p.name, hand: [], score: 0, uno: false, roundsWon: 0 })),
     deck: [], discard: [], dir: 1, color: 'red', turn: 0, round: 0,
     phase: 'play', drawnCardId: null, pending: null, unoVuln: null,
-    roundResult: null, winnerId: null, log: [],
+    roundResult: null, winnerId: null, log: [], maxRounds: Math.max(0, opts.maxRounds | 0),
   };
   startRound(s, rng);
   return s;
@@ -140,8 +141,15 @@ function endRound(s, winnerIdx) {
   w.roundsWon = (w.roundsWon ?? 0) + 1;
   s.roundResult = { winnerId: w.id, points };
   s.unoVuln = null; s.pending = null; s.drawnCardId = null;
-  if (w.score >= WINNING_SCORE) { s.phase = 'matchOver'; s.winnerId = w.id; }
-  else s.phase = 'roundOver';
+  const fixedRounds = (s.maxRounds ?? 0) > 0;
+  const matchEnds = fixedRounds ? s.round >= s.maxRounds : w.score >= WINNING_SCORE;
+  if (matchEnds) {
+    s.phase = 'matchOver';
+    // Fixed rounds: highest total wins, ties go to the player who won more rounds. First-to-500: the round winner.
+    s.winnerId = fixedRounds
+      ? [...s.players].sort((a, b) => b.score - a.score || (b.roundsWon ?? 0) - (a.roundsWon ?? 0))[0].id
+      : w.id;
+  } else s.phase = 'roundOver';
   log(s, `${w.name} wins the round (+${points})`);
 }
 
@@ -346,6 +354,7 @@ export function viewFor(s, pid) {
     pending: s.pending ? { offender: s.pending.offender, challenger: s.pending.challenger } : null,
     deckCount: s.deck.length,
     round: s.round,
+    maxRounds: s.maxRounds ?? 0,
     roundResult: s.roundResult,
     winnerId: s.winnerId,
     unoVulnId: s.unoVuln?.id ?? null,

@@ -92,6 +92,18 @@ assert(!(await send(clients[0].socket, 'set_settings', { turnSeconds: 7 })).ok, 
 assert((await send(clients[0].socket, 'set_settings', { turnSeconds: 15 })).ok, 'host sets 15s timer');
 await new Promise((r) => setTimeout(r, 100));
 assert(clients.every((c) => c.room.settings.turnSeconds === 15), 'settings broadcast to all');
+// match length: host only, validated, independent of the turn timer, shown to everyone
+assert(clients.every((c) => c.room.settings.rounds === 0), 'default is first to 500');
+assert(!(await send(clients[1].socket, 'set_settings', { rounds: 3 })).ok, 'non-host cannot change match length');
+assert(!(await send(clients[0].socket, 'set_settings', { rounds: 2 })).ok, 'invalid round count rejected');
+assert(!(await send(clients[0].socket, 'set_settings', { rounds: 3, turnSeconds: 7 })).ok, 'bad value rejects the whole change');
+assert(clients[0].room.settings.rounds === 0, 'nothing applied after a rejected change');
+assert(!(await send(clients[0].socket, 'set_settings', {})).ok, 'empty settings change rejected');
+assert((await send(clients[0].socket, 'set_settings', { rounds: 3 })).ok, 'host sets 3 rounds');
+await new Promise((r) => setTimeout(r, 100));
+assert(clients.every((c) => c.room.settings.rounds === 3 && c.room.settings.turnSeconds === 15), 'rounds broadcast, turn timer untouched');
+assert((await send(clients[0].socket, 'set_settings', { rounds: 0 })).ok, 'host switches back to first to 500');
+await new Promise((r) => setTimeout(r, 100));
 assert((await send(clients[0].socket, 'start_game')).ok, 'start');
 await new Promise((r) => setTimeout(r, 100));
 
@@ -208,7 +220,7 @@ if (end.phase === 'roundOver') {
   assert((await send(clients[0].socket, 'next_round')).ok, 'player starts next round');
   await new Promise((r) => setTimeout(r, 200));
   assert(spec.room.role === 'player' && spec.room.waiting.length === 0, 'late joiner became a player');
-  assert(spec.room.game.players.length === 5 && spec.room.game.hand.length === 7, 'late joiner dealt 7 cards');
+  assert(spec.room.game.players.length === 5 && spec.room.game.hand.length >= 7 && spec.room.game.hand.length <= 9, 'late joiner dealt in (7 cards, +2 if a Draw Two started the round)');
   assert(spec.room.game.players.find((p) => p.id === specId).score === 0, 'late joiner starts at 0');
   assert(clients[0].room.members.length === 5 && clients[0].room.spectators.length === 0, 'room lists updated');
   console.log('late joiner seated at next round ok');
