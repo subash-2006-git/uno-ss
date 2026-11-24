@@ -5,6 +5,7 @@ import './styles.css';
 import './responsive.css';
 import './theme.css';
 import './social.css';
+import './table.css';
 import { installAudioUnlock } from './sound.js';
 
 installAudioUnlock();

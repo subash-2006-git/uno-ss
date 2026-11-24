@@ -96,7 +96,7 @@ export function createGame(players, rng = Math.random, opts = {}) {
     throw new Error(`UNO needs ${MIN_PLAYERS}-${MAX_PLAYERS} players`);
   }
   const s = {
-    players: players.map((p) => ({ id: p.id, name: p.name, hand: [], score: 0, uno: false, roundsWon: 0 })),
+    players: players.map((p) => ({ id: p.id, name: p.name, hand: [], score: 0, uno: false, roundsWon: 0, bot: Boolean(p.bot) })),
     deck: [], discard: [], dir: 1, color: 'red', turn: 0, round: 0,
     phase: 'play', drawnCardId: null, pending: null, unoVuln: null,
     roundResult: null, winnerId: null, log: [], maxRounds: Math.max(0, opts.maxRounds | 0),
@@ -277,11 +277,11 @@ export function catchUno(s, byId, rng = Math.random, now = Date.now()) {
 }
 
 // A late joiner takes a seat between rounds (score starts at 0). Dealt in by the next startRound.
-export function addPlayer(s, { id, name }) {
+export function addPlayer(s, { id, name, bot = false }) {
   if (s.phase !== 'roundOver') return err('New players can only join between rounds');
   if (s.players.length >= MAX_PLAYERS) return err('Table is full');
   if (s.players.some((p) => p.id === id)) return err('Already seated');
-  s.players.push({ id, name, hand: [], score: 0, uno: false, roundsWon: 0 });
+  s.players.push({ id, name, hand: [], score: 0, uno: false, roundsWon: 0, bot: Boolean(bot) });
   log(s, `${name} joined the table`);
   return OK;
 }
@@ -320,6 +320,61 @@ export function removePlayer(s, pid) {
   return OK;
 }
 
+// A bot takes over a seat (a player left) or hands it back (they rejoined). Hand and score are kept.
+export function setSeatBot(s, pid, isBot) {
+  const p = s.players.find((x) => x.id === pid);
+  if (!p) return err('Not seated');
+  p.bot = Boolean(isBot);
+  log(s, isBot ? `A bot is playing for ${p.name}` : `${p.name} is back`);
+  return OK;
+}
+
+const colorCounts = (hand) => {
+  const n = { red: 0, yellow: 0, green: 0, blue: 0 };
+  for (const c of hand) if (c.color !== 'wild') n[c.color]++;
+  return n;
+};
+
+// One move for a bot seat. Simple but sensible: keep the colour it holds most of, dump high-value
+// cards first, hit the next player with action cards when they are about to win, never bluff a Wild Draw Four.
+// Call again after a draw: if the drawn card is playable the same seat is still to move.
+export function botMove(s, pid, rng = Math.random) {
+  const idx = idxOf(s, pid);
+  if (idx < 0) return err('Not seated');
+  const p = s.players[idx];
+
+  if (s.phase === 'challenge') {
+    if (s.pending?.challenger !== pid) return err('Not your decision');
+    return resolveChallenge(s, pid, rng() < 0.35, rng);
+  }
+  if (s.phase !== 'play' || s.turn !== idx) return err('Not your turn');
+
+  const top = topCard(s);
+  const playable = p.hand.filter((c) => isPlayable(c, top, s.color) && (s.drawnCardId == null || c.id === s.drawnCardId));
+  if (!playable.length) return s.drawnCardId != null ? passTurn(s, pid) : drawCard(s, pid, rng);
+
+  const counts = colorCounts(p.hand);
+  const danger = s.players[nextIdx(s, idx)].hand.length <= 2;
+  const nonWild = playable.filter((c) => c.color !== 'wild');
+  const pool = nonWild.length ? nonWild : playable;
+  const score = (c) => {
+    let v = c.color === 'wild' ? (c.value === 'wild4' ? -3 : -1) : counts[c.color];
+    if (ACTIONS.includes(c.value)) v += danger ? 6 : 1;
+    return v + cardPoints(c) / 50 + rng() * 0.5;
+  };
+  const best = pool.map((c) => [score(c), c]).sort((a, b) => b[0] - a[0])[0][1];
+
+  let color;
+  if (best.color === 'wild') {
+    const rest = colorCounts(p.hand.filter((c) => c.id !== best.id));
+    const top1 = Object.entries(rest).sort((a, b) => b[1] - a[1])[0];
+    color = top1[1] > 0 ? top1[0] : COLORS[Math.floor(rng() * 4)];
+  }
+  const r = playCard(s, pid, best.id, color, rng);
+  if (r.ok && s.phase !== 'roundOver' && s.phase !== 'matchOver' && p.hand.length === 1) callUno(s, pid); // bots are polite
+  return r;
+}
+
 // Id of whoever must act next (null when the round/match is over).
 export function actorId(s) {
   if (s.phase === 'challenge') return s.pending?.challenger ?? null;
@@ -343,7 +398,7 @@ export function autoMove(s, pid, rng = Math.random) {
 export function viewFor(s, pid) {
   const me = s.players.find((p) => p.id === pid);
   return {
-    players: s.players.map((p) => ({ id: p.id, name: p.name, count: p.hand.length, score: p.score, uno: p.uno })),
+    players: s.players.map((p) => ({ id: p.id, name: p.name, count: p.hand.length, score: p.score, uno: p.uno, bot: Boolean(p.bot) })),
     hand: me ? me.hand : [],
     top: topCard(s),
     color: s.color,

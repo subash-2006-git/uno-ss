@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import Avatar from '../components/Avatar.jsx';
 import Icon from '../components/Icon.jsx';
 
-const ORDER = { pending: 0, approved: 1, rejected: 2 };
+const ORDER = { pending: 0, approved: 1, suspended: 2, rejected: 3 };
+const FILTERS = ['all', 'pending', 'approved', 'suspended', 'rejected'];
 
-export default function Admin({ token, onBack, notify }) {
+export default function Admin({ token, tick, onBack, notify }) {
   const [users, setUsers] = useState(null);
   const [resetFor, setResetFor] = useState(null); // user id with the reset box open
   const [newPw, setNewPw] = useState('');
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('all');
 
   const load = useCallback(async () => {
     const res = await api('/api/admin/users', { token });
@@ -16,7 +19,8 @@ export default function Admin({ token, onBack, notify }) {
     setUsers(res.users);
   }, [token, notify]);
 
-  useEffect(() => { load(); }, [load]);
+  // Reload on open and whenever the server says the waiting list changed (new signup, someone approved…).
+  useEffect(() => { load(); }, [load, tick]);
 
   const run = async (id, action, body, okMsg) => {
     const res = await api(`/api/admin/users/${id}/${action}`, { method: 'POST', token, body });
@@ -27,13 +31,23 @@ export default function Admin({ token, onBack, notify }) {
     load();
   };
 
-  const sorted = [...(users ?? [])].sort((a, b) => ORDER[a.status] - ORDER[b.status] || a.username.localeCompare(b.username));
-  const pending = sorted.filter((u) => u.status === 'pending').length;
+  const counts = useMemo(() => {
+    const c = { all: users?.length ?? 0, pending: 0, approved: 0, suspended: 0, rejected: 0 };
+    for (const u of users ?? []) c[u.status] = (c[u.status] ?? 0) + 1;
+    return c;
+  }, [users]);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return [...(users ?? [])]
+      .filter((u) => (filter === 'all' || u.status === filter) && (!q || u.username.toLowerCase().includes(q)))
+      .sort((a, b) => ORDER[a.status] - ORDER[b.status] || a.username.localeCompare(b.username));
+  }, [users, filter, query]);
 
   return (
-    <main className="home wideview">
+    <main className="home wideview page">
       <div className="whoami">
-        <h2>Users {pending > 0 && <span className="badge">{pending} pending</span>}</h2>
+        <h2>Users {counts.pending > 0 && <span className="badge">{counts.pending} pending</span>}</h2>
         <span>
           <button className="ghost" onClick={load}>Refresh</button>
           <button className="ghost" onClick={onBack}>Back</button>
@@ -41,18 +55,32 @@ export default function Admin({ token, onBack, notify }) {
       </div>
 
       <div className="panel">
+        <label className="searchbox">
+          <Icon name="search" size={16} />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by username" aria-label="Search users" />
+        </label>
+        <div className="filters" role="group" aria-label="Filter by status">
+          {FILTERS.map((f) => (
+            <button key={f} className={filter === f ? 'on' : ''} aria-pressed={filter === f} onClick={() => setFilter(f)}>
+              {f} <small>{counts[f] ?? 0}</small>
+            </button>
+          ))}
+        </div>
+
         {users === null && <p className="muted">Loading…</p>}
-        {users?.length === 0 && <p className="muted">No users yet.</p>}
+        {users && shown.length === 0 && <p className="muted">{users.length ? 'No one matches.' : 'No users yet.'}</p>}
         <ul className="users">
-          {sorted.map((u) => (
+          {shown.map((u) => (
             <li key={u.id}>
               <div className="urow">
                 <Avatar name={u.username} size={28} />
                 <span className="uname">{u.username}{u.isAdmin && <span className="host"><Icon name="crown" size={15} /></span>}</span>
                 <span className={`pill ${u.status}`}>{u.status}</span>
                 <span className="uactions">
-                  {u.status !== 'approved' && <button className="primary" onClick={() => run(u.id, 'approve', undefined, `${u.username} approved`)}>Approve</button>}
+                  {(u.status === 'pending' || u.status === 'rejected') && <button className="primary" onClick={() => run(u.id, 'approve', undefined, `${u.username} approved`)}>Approve</button>}
                   {u.status === 'pending' && <button onClick={() => run(u.id, 'reject', undefined, `${u.username} rejected`)}>Reject</button>}
+                  {u.status === 'suspended' && <button className="primary" onClick={() => run(u.id, 'reinstate', undefined, `${u.username} reinstated`)}>Reinstate</button>}
+                  {u.status === 'approved' && !u.isAdmin && <button className="danger" onClick={() => run(u.id, 'suspend', undefined, `${u.username} suspended`)}>Suspend</button>}
                   <button className="ghost" onClick={() => { setResetFor(resetFor === u.id ? null : u.id); setNewPw(''); }}>Reset password</button>
                 </span>
               </div>

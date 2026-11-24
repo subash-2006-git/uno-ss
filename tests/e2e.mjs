@@ -226,6 +226,124 @@ if (end.phase === 'roundOver') {
   console.log('late joiner seated at next round ok');
 }
 spec.socket.disconnect();
+
+/* ================= bots, seat holding + rejoin, admin tools, profiles, abuse limits ================= */
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function mk(prefix) {
+  const username = `${prefix}_${run}`;
+  assert((await http('/api/signup', { method: 'POST', body: { username, password: pw } })).status === 201, 'signup ' + username);
+  const uid = (await http('/api/admin/users', { token: admin.token })).users.find((u) => u.username === username).id;
+  assert((await http(`/api/admin/users/${uid}/approve`, { method: 'POST', token: admin.token })).status === 200, 'approve ' + username);
+  const login = await http('/api/login', { method: 'POST', body: { username, password: pw } });
+  const socket = io(URL, { forceNew: true });
+  await new Promise((r) => socket.on('connect', r));
+  const c = { username, id: uid, token: login.token, socket, room: null, rejoin: undefined, suspended: null };
+  socket.on('room_update', (r) => { c.room = r; });
+  socket.on('rejoin_info', (i) => { c.rejoin = i.code; });
+  socket.on('suspended', (m) => { c.suspended = m; });
+  assert((await send(socket, 'auth', { token: c.token })).ok, 'auth ' + username);
+  return c;
+}
+// One reasonable move for a human client whose turn it is.
+async function playOne(c) {
+  const g = c.room?.game;
+  if (!g) return;
+  const mover = g.phase === 'challenge' ? g.pending?.challenger : g.phase === 'play' ? g.turn : null;
+  if (mover !== c.id) return;
+  if (g.phase === 'challenge') return send(c.socket, 'challenge', { accept: true });
+  const ok = g.hand.filter((x) => isPlayable(x, g.top, g.color) && (g.drawnCardId == null || x.id === g.drawnCardId));
+  if (ok.length) return send(c.socket, 'play_card', { cardId: ok[0].id, color: 'blue' });
+  return send(c.socket, g.drawnCardId != null ? 'pass_turn' : 'draw_card');
+}
+
+// admins hear about new sign-ups live
+const adminSock = io(URL, { forceNew: true });
+await new Promise((r) => adminSock.on('connect', r));
+const pendingEvents = [];
+adminSock.on('admin_pending', (e) => pendingEvents.push(e));
+assert((await send(adminSock, 'auth', { token: admin.token })).ok, 'admin socket auth');
+const PN = await mk('pn');
+await wait(200);
+assert(pendingEvents.some((e) => e.newUser === PN.username), 'admin is told about the new sign-up');
+
+// bots in the lobby
+const H = await mk('bh');
+const R = await mk('br');
+assert((await send(H.socket, 'create_room')).ok, 'bot host creates room');
+const bcode = H.room.code;
+assert((await send(R.socket, 'join_room', { code: bcode })).ok, 'second human joins');
+assert(!(await send(R.socket, 'add_bot')).ok, 'non-host cannot add bots');
+assert((await send(H.socket, 'add_bot')).ok, 'host adds a bot');
+await wait(100);
+const botMember = H.room.members.find((m) => m.bot);
+assert(botMember && botMember.id.startsWith('bot-') && botMember.connected, 'bot is listed and always "connected"');
+assert(!(await send(R.socket, 'remove_bot', { id: botMember.id })).ok, 'non-host cannot remove bots');
+assert((await send(H.socket, 'remove_bot', { id: botMember.id })).ok, 'host removes the bot');
+await wait(100);
+assert(!H.room.members.some((m) => m.bot), 'bot gone');
+assert((await send(H.socket, 'add_bot')).ok, 'host adds a bot again');
+assert((await send(H.socket, 'start_game')).ok, 'game starts with humans and a bot');
+await wait(150);
+const botName = H.room.members.find((m) => m.bot).name;
+assert(H.room.game.players.some((p) => p.bot && p.name === botName), 'bot seated in the game');
+
+// the bot actually plays its own turns
+let botActed = false;
+for (let i = 0; i < 400 && !botActed; i++) {
+  await playOne(H); await playOne(R);
+  await wait(30);
+  botActed = H.room.game.log.some((l) => l.startsWith(botName) && /played|drew/.test(l));
+}
+assert(botActed, 'the bot plays by itself');
+
+// leaving a running game: a bot takes the seat, and the player can take it back
+await send(H.socket, 'leave_room');
+await wait(250);
+assert(H.rejoin === bcode, 'the leaver is offered a way back');
+assert(R.room.game.players.find((p) => p.id === H.id).bot === true, 'a bot plays the leaver\'s seat');
+assert(R.room.members.find((m) => m.id === H.id)?.away === true, 'seat is marked away');
+assert(R.room.hostId === R.id, 'host passes to the remaining human');
+const back = await send(H.socket, 'join_room', { code: bcode });
+assert(back.ok && back.rejoined && back.role === 'player', 'rejoining takes the seat back');
+await wait(250);
+assert(H.room.game.players.find((p) => p.id === H.id).bot === false && H.room.game.hand.length > 0, 'seat reclaimed with a hand');
+// when the last humans leave, there is no game left to hold a seat in
+await send(H.socket, 'leave_room'); await send(R.socket, 'leave_room');
+await wait(250);
+assert((await send(H.socket, 'join_room', { code: bcode })).error === 'Room not found', 'room closes once every human has left');
+
+// admin tools: suspend / reinstate
+const SP = await mk('sp');
+const adminId = (await http('/api/admin/users', { token: admin.token })).users.find((u) => u.isAdmin).id;
+assert((await http(`/api/admin/users/${adminId}/suspend`, { method: 'POST', token: admin.token })).status === 400, 'admins cannot be suspended');
+assert((await http(`/api/admin/users/${SP.id}/reinstate`, { method: 'POST', token: admin.token })).status === 400, 'cannot reinstate someone who is not suspended');
+assert((await send(SP.socket, 'create_room')).ok, 'to-be-suspended player is in a room');
+assert((await http(`/api/admin/users/${SP.id}/suspend`, { method: 'POST', token: admin.token })).status === 200, 'admin suspends');
+await wait(400);
+assert(SP.suspended, 'suspended player is thrown out and told');
+const sLogin = await http('/api/login', { method: 'POST', body: { username: SP.username, password: pw } });
+assert(sLogin.status === 403 && sLogin.status !== 200 && !sLogin.token, 'suspended user cannot log in');
+assert((await http('/api/me', { token: SP.token })).status === 401, 'suspended user session is dead');
+assert((await http(`/api/admin/users/${SP.id}/reinstate`, { method: 'POST', token: admin.token })).status === 200, 'admin reinstates');
+assert((await http('/api/login', { method: 'POST', body: { username: SP.username, password: pw } })).status === 200, 'reinstated user can log in again');
+
+// profiles
+const prof = await http(`/api/profile/${SP.id}`, { token: admin.token });
+assert(prof.status === 200 && prof.user.username === SP.username && prof.summary.played === 0, 'profile of another player');
+assert((await http(`/api/profile/${SP.id}`)).status === 401, 'profiles need a login');
+assert((await http('/api/profile/nope', { token: admin.token })).status === 404, 'unknown profile is a 404');
+
+// abuse limits: event flood and sign-up flood
+const flood = await Promise.all(Array.from({ length: 40 }, () => send(R.socket, 'join_room', { code: 'ZZZZZ' })));
+assert(flood.some((r) => /Too many requests/.test(r.error ?? '')), 'rapid events are rate limited');
+assert(flood.some((r) => r.error === 'Room not found'), '...but the first few go through');
+const statuses = [];
+for (let i = 0; i < 40 && !statuses.includes(429); i++) {
+  statuses.push((await http('/api/signup', { method: 'POST', body: { username: `fl${i}x${run}`, password: pw } })).status);
+}
+assert(statuses.includes(429) && statuses[0] === 201, 'sign-up flood is cut off after a reasonable number');
+adminSock.disconnect(); [H, R, SP, PN].forEach((x) => x.socket.disconnect());
+console.log('bots, rejoin, admin tools, profiles and abuse limits ok');
 console.log(`PASS: accounts (signup/approve/reject/reset) + full round, +${end.roundResult.points} pts, reconnect ok`);
 clients.forEach((c) => c.socket.disconnect());
 process.exit(0);

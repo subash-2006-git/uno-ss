@@ -47,11 +47,20 @@ export default function Lobby({ room, me, act, leave, chatApi, emotes }) {
             <li key={m.id} data-pid={m.id} className={m.connected ? '' : 'away'} style={{ '--i': i }}>
               <Avatar name={m.name} size={30} />
               <span className="mname">{m.name}{m.id === me ? ' (you)' : ''}</span>
+              {m.bot && <span className="bottag"><Icon name="bot" size={12} /> BOT</span>}
               {m.id === room.hostId && <span className="host" title="Host"><Icon name="crown" size={16} /></span>}
               {!m.connected && <em className="offline">offline</em>}
+              {isHost && m.bot && (
+                <button className="ghost iconbtn rmbot" onClick={() => act('remove_bot', { id: m.id })} aria-label={`Remove ${m.name}`} title="Remove bot"><Icon name="close" size={14} /></button>
+              )}
             </li>
           ))}
         </ul>
+        {isHost && (
+          <button className="ghost iconbtn addbot" disabled={n >= max} onClick={() => act('add_bot')}>
+            <Icon name="plus" size={16} /> Add a bot
+          </button>
+        )}
 
         {room.spectators.length > 0 && (
           <div className="watchers-list">
@@ -93,7 +102,7 @@ export default function Lobby({ room, me, act, leave, chatApi, emotes }) {
         )}
         {isHost && (
           <button className="primary" disabled={n < min} onClick={() => act('start_game')}>
-            {n < min ? `Need ${min - n} more player${min - n > 1 ? 's' : ''}` : 'Start game'}
+            {n < min ? `Need ${min - n} more player${min - n > 1 ? 's' : ''} (or a bot)` : 'Start game'}
           </button>
         )}
         {!isHost && !isSpectator && <p className="muted">Waiting for the host to start…</p>}

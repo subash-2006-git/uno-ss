@@ -122,16 +122,21 @@ function standings(game) {
     .map((p, i) => ({ playerId: p.id, name: p.name, score: p.score, roundsWon: p.roundsWon ?? 0, placing: i + 1 }));
 }
 
+const isBotId = (id) => String(id).startsWith('bot-');
+
 export async function recordMatch(code, game) {
-  const rows = standings(game);
+  // Placings count everyone at the table, but computer players never get history rows or leaderboard entries.
+  const rows = standings(game).filter((r) => !isBotId(r.playerId));
+  if (!rows.length) return;
+  const winnerId = isBotId(game.winnerId) ? null : game.winnerId;
   if (!pool) {
-    mem.matches.push({ id: mem.matches.length + 1, roomCode: code, winnerId: game.winnerId, rounds: game.round, finishedAt: new Date(), scores: rows });
+    mem.matches.push({ id: mem.matches.length + 1, roomCode: code, winnerId, winnerName: standings(game)[0]?.name, rounds: game.round, finishedAt: new Date(), scores: rows, tableSize: game.players.length });
     return;
   }
   try {
     const m = await pool.query(
       'INSERT INTO matches (room_code, winner_id, rounds) VALUES ($1,$2,$3) RETURNING id',
-      [code, game.winnerId, game.round]);
+      [code, winnerId, game.round]);
     const id = m.rows[0].id;
     for (const r of rows) {
       await pool.query(
@@ -174,7 +179,8 @@ export async function userStats(userId) {
       .map((m) => {
         const s = m.scores.find((x) => x.playerId === userId);
         return { id: m.id, roomCode: m.roomCode, finishedAt: m.finishedAt, rounds: m.rounds, score: s.score, roundsWon: s.roundsWon,
-          placing: s.placing, players: m.scores.length, winner: m.scores.find((x) => x.playerId === m.winnerId)?.name ?? null,
+          placing: s.placing, players: m.tableSize ?? m.scores.length,
+          winner: m.scores.find((x) => x.playerId === m.winnerId)?.name ?? m.winnerName ?? null,
           won: m.winnerId === userId };
       });
   } else {
@@ -193,15 +199,18 @@ export async function userStats(userId) {
   const wins = recent.filter((r) => r.won).length;
   let streak = 0;
   for (const r of recent) { if (r.won) streak++; else break; } // current win streak (newest first)
+  const placed = recent.filter((r) => r.placing != null);
   return {
     summary: {
       played, wins,
+      podiums: placed.filter((r) => r.placing <= 3).length,
+      avgPlace: placed.length ? Math.round((placed.reduce((a, r) => a + r.placing, 0) / placed.length) * 10) / 10 : 0,
       winRate: played ? Math.round((wins / played) * 100) : 0,
       avgScore: played ? Math.round(recent.reduce((a, r) => a + r.score, 0) / played) : 0,
       bestScore: played ? Math.max(...recent.map((r) => r.score)) : 0,
       roundsWon: recent.reduce((a, r) => a + (r.roundsWon ?? 0), 0),
       streak,
     },
-    recent: recent.slice(0, 15),
+    recent: recent.slice(0, 100),
   };
 }

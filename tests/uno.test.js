@@ -202,6 +202,59 @@ describe('scoring', () => {
   });
 });
 
+describe('bots', () => {
+  it('a table of only bots plays whole matches to the end without cheating or stalling', () => {
+    for (let g = 0; g < 120; g++) {
+      const n = 2 + (g % 15);
+      const rng = seeded(500 + g);
+      const s = U.createGame(Array.from({ length: n }, (_, i) => ({ id: 'b' + i, name: 'B' + i, bot: true })), rng, { maxRounds: 2 });
+      const total = () => s.deck.length + s.discard.length + s.players.reduce((a, p) => a + p.hand.length, 0);
+      const cards = total();
+      let steps = 0;
+      while (s.phase !== 'matchOver') {
+        if (++steps > 20000) throw new Error(`bots stalled (game ${g}, ${n} players, phase ${s.phase})`);
+        if (s.phase === 'roundOver') { U.nextRound(s, rng); continue; }
+        const r = U.botMove(s, U.actorId(s), rng);
+        if (!r.ok) throw new Error(`bot made an illegal move: ${r.error}`);
+        expect(total()).toBe(cards); // no card is created or lost
+      }
+      expect(s.round).toBe(2);
+      expect(s.winnerId).toBeTruthy();
+    }
+  });
+
+  it('never plays an illegal Wild Draw Four (no bluffing) and calls UNO', () => {
+    const w4 = c('wild', 'wild4'), r5 = c('red', '5'), g2 = c('green', '2');
+    const s = setup([[w4, r5, c('blue', '1')], [c('blue', '2')], []]);
+    s.color = 'red'; s.discard = [c('red', '9')];
+    U.botMove(s, 'p0');
+    expect(s.discard.at(-1).id).toBe(r5.id); // plays the red card, keeps the Wild Draw Four
+    const t = setup([[c('red', '3'), c('blue', '8')], [c('blue', '2')], []]);
+    t.discard = [c('red', '9')]; t.color = 'red';
+    U.botMove(t, 'p0');
+    expect(t.players[0].uno).toBe(true); // went down to one card and called it
+    expect(g2).toBeTruthy();
+  });
+
+  it('draws when it cannot play and passes if the drawn card is useless', () => {
+    const s = setup([[c('blue', '1'), c('blue', '2')], [c('blue', '2')], []]);
+    s.deck.push(c('green', '3'));
+    U.botMove(s, 'p0');
+    expect(s.players[0].hand).toHaveLength(3);
+    expect(s.turn).toBe(1);
+  });
+
+  it('takes over a seat and gives it back, keeping the hand', () => {
+    const s = setup([[c('red', '1')], [c('red', '2')], [c('red', '3')]]);
+    U.setSeatBot(s, 'p1', true);
+    expect(s.players[1].bot).toBe(true);
+    expect(s.players[1].hand).toHaveLength(1);
+    U.setSeatBot(s, 'p1', false);
+    expect(s.players[1].bot).toBe(false);
+    expect(U.viewFor(s, 'p0').players[1].bot).toBe(false);
+  });
+});
+
 describe('fixed number of rounds', () => {
   // Win the current round as p0 with a controlled hand so the points are predictable.
   function winRound(s, winnerIdx, loserHands) {

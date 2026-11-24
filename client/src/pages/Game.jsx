@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { isPlayable } from '@uno/shared';
 import Card from '../components/Card.jsx';
 import ColorPicker from '../components/ColorPicker.jsx';
@@ -10,15 +10,35 @@ import ChatButton, { EmoteButton } from '../components/ChatDock.jsx';
 import EmoteLayer from '../components/EmoteLayer.jsx';
 import Flights from '../components/Flights.jsx';
 import Bursts from '../components/Bursts.jsx';
+import Penalties from '../components/Penalties.jsx';
 import Avatar from '../components/Avatar.jsx';
 import Icon from '../components/Icon.jsx';
-import { useSettings } from '../settings.js';
+import { updateSettings, useSettings } from '../settings.js';
 import { useGameFx, useLatency } from '../hooks.js';
 import { play as sfx } from '../sound.js';
 
 // Cards rest on the discard pile at a slightly different angle each, so the pile looks hand-thrown.
 const tilt = (id) => ((id * 53) % 17) - 8;
 const reducedMotion = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
+
+/* ----- hand sorting (display only: the server keeps the hand in dealt order) ----- */
+const COLOR_ORDER = { red: 0, yellow: 1, green: 2, blue: 3, wild: 4 };
+const VALUE_ORDER = { skip: 10, reverse: 11, draw2: 12, wild: 13, wild4: 14 };
+const rank = (c) => VALUE_ORDER[c.value] ?? Number(c.value);
+const SORTERS = {
+  none: null,
+  colour: (a, b) => COLOR_ORDER[a.color] - COLOR_ORDER[b.color] || rank(a) - rank(b),
+  number: (a, b) => rank(a) - rank(b) || COLOR_ORDER[a.color] - COLOR_ORDER[b.color],
+};
+const SORT_NEXT = { none: 'colour', colour: 'number', number: 'none' };
+const SORT_LABEL = { none: 'As dealt', colour: 'By colour', number: 'By number' };
+
+// Opponents sit around the top of the table, clockwise from the left, in turn order after me.
+function seatPosition(i, n) {
+  const deg = 195 - (i + 0.5) * (210 / n);          // 195° (lower left) over 90° (top) to -15° (lower right)
+  const rad = (deg * Math.PI) / 180;
+  return { left: `${50 + 50 * Math.cos(rad)}%`, top: `${50 - 50 * Math.sin(rad)}%` };
+}
 
 export default function Game({ room, me, act, leave, chatApi, emotes }) {
   const g = room.game;
@@ -48,13 +68,20 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
   const waitingNames = room.waiting.map((id) => room.spectators.find((x) => x.id === id)?.name).filter(Boolean);
   const iAmWaiting = room.waiting.includes(me);
 
+  // Seats: everyone but me, in turn order starting with the player after me.
+  const others = useMemo(() => {
+    const at = g.players.findIndex((p) => p.id === me);
+    const rotated = at < 0 ? g.players : [...g.players.slice(at + 1), ...g.players.slice(0, at)];
+    return rotated;
+  }, [g.players, me]);
+
+  const hand = useMemo(() => {
+    const cmp = SORTERS[s.sort];
+    return cmp ? [...g.hand].sort(cmp) : g.hand;
+  }, [g.hand, s.sort]);
+
   useGameFx(g, me);
   useEffect(() => { setSel(null); }, [g.top.id, myTurn, g.drawnCardId, g.phase]);
-
-  // Keep the active opponent visible in the scrolling strip (phones).
-  useEffect(() => {
-    document.querySelector('.opp.turn')?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: s.gfx === 'low' ? 'auto' : 'smooth' });
-  }, [actorId, s.gfx]);
 
   const doShake = () => { if (s.gfx === 'high') { setShake(true); setTimeout(() => setShake(false), 480); } };
   const onLand = (id, flying) => setHiddenTop((cur) => (flying ? id : cur === id ? null : cur));
@@ -79,8 +106,9 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
   else status = `${nameOf(g.turn)}'s turn`;
 
   const quality = ping == null ? '' : ping < 120 ? 'good' : ping < 350 ? 'ok' : 'slow';
-  const n = g.hand.length;
+  const n = hand.length;
   const spread = Math.min(4, 36 / Math.max(n, 1)); // fan angle per card, narrower for big hands
+  const dense = others.length >= 7;
 
   return (
     <main className={`game ${shake ? 'shake' : ''}`}>
@@ -94,58 +122,63 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
           <EmoteButton act={act} />
           <ChatButton api={chatApi} act={act} />
           <SettingsButton />
-          <button className="ghost" onClick={() => (isSpectator || window.confirm('Leave this game?')) && leave()}>Leave</button>
+          <button className="ghost" onClick={() => (isSpectator || window.confirm('Leave this game? A bot will play your seat and you can rejoin from the home screen.')) && leave()}>Leave</button>
         </span>
       </header>
 
       {isSpectator && <div className="watchbanner"><Icon name="eye" size={16} /> You are watching. Player hands stay hidden.</div>}
 
-      <section className="opponents">
-        {g.players.filter((p) => p.id !== me).map((p) => {
-          const active = actorId === p.id;
-          return (
-            <div key={p.id} data-pid={p.id} className={`opp ${active ? 'turn' : ''}`}>
-              <Avatar name={p.name} size={34} />
-              <div className="oname">{p.name}</div>
-              <div className="ominifan" aria-label={`${p.count} cards`}>
-                {Array.from({ length: Math.min(p.count, 6) }, (_, i) => <i key={i} />)}
-                <b key={p.count} className="bump">×{p.count}</b>
-              </div>
-              <div className="oscore">{p.score} pts</div>
-              {g.unoVulnId === p.id && !isSpectator && <button className="catch" onClick={() => act('catch_uno')}>Catch!</button>}
-              {p.count === 1 && (g.unoVulnId !== p.id || isSpectator) && <span className="unotag">UNO</span>}
-            </div>
-          );
-        })}
-      </section>
+      <section className="tablearea">
+        <div className={`felt ${myTurn ? 'mine' : ''} ${dense ? 'dense' : ''}`} style={{ '--cur': `var(--${g.color})` }}>
+          <div className="seats">
+            {others.map((p, i) => {
+              const active = actorId === p.id;
+              return (
+                <div key={p.id} data-pid={p.id} className={`opp seat ${active ? 'turn' : ''} ${p.bot ? 'isbot' : ''}`} style={seatPosition(i, others.length)}>
+                  <Avatar name={p.name} size={dense ? 28 : 34} />
+                  <div className="oname">{p.name}</div>
+                  {p.bot && <span className="bottag"><Icon name="bot" size={11} /> BOT</span>}
+                  <div className="ominifan" aria-label={`${p.count} cards`}>
+                    {Array.from({ length: Math.min(p.count, 6) }, (_, k) => <i key={k} />)}
+                    <b key={p.count} className="bump">×{p.count}</b>
+                  </div>
+                  <div className="oscore">{p.score} pts</div>
+                  {g.unoVulnId === p.id && !isSpectator && <button className="catch" onClick={() => act('catch_uno')}>Catch!</button>}
+                  {p.count === 1 && (g.unoVulnId !== p.id || isSpectator) && <span className="unotag">UNO</span>}
+                </div>
+              );
+            })}
+          </div>
 
-      <section className={`table ${myTurn ? 'mine' : ''}`} style={{ '--cur': `var(--${g.color})` }}>
-        <div className="stage">
-          <div className="dirring" data-dir={g.dir} aria-hidden="true" />
-          <div className="piles">
-            <div className="pile">
-              <button className={`drawpile ${myTurn && !hasDrawn ? 'ready' : ''}`} disabled={!myTurn || hasDrawn} onClick={() => act('draw_card')} aria-label="Draw a card">
-                <Card back />
-              </button>
-              <small>{g.deckCount} left</small>
-            </div>
-            <div className="pile">
-              <div className="discard">
-                {prevTop && <div className="under" style={{ '--tilt': `${tilt(prevTop.id)}deg` }}><Card card={prevTop} /></div>}
-                <div key={g.top.id} className="topcard" style={{ '--tilt': `${tilt(g.top.id)}deg`, visibility: hiddenTop === g.top.id ? 'hidden' : undefined }}>
-                  <Card card={g.top} />
+          <div className={`table ${myTurn ? 'mine' : ''}`}>
+            <div className="stage">
+              <div className="dirring" data-dir={g.dir} aria-hidden="true" />
+              <div className="piles">
+                <div className="pile">
+                  <button className={`drawpile ${myTurn && !hasDrawn ? 'ready' : ''}`} disabled={!myTurn || hasDrawn} onClick={() => act('draw_card')} aria-label="Draw a card">
+                    <Card back />
+                  </button>
+                  <small>{g.deckCount} left</small>
+                </div>
+                <div className="pile">
+                  <div className="discard">
+                    {prevTop && <div className="under" style={{ '--tilt': `${tilt(prevTop.id)}deg` }}><Card card={prevTop} /></div>}
+                    <div key={g.top.id} className="topcard" style={{ '--tilt': `${tilt(g.top.id)}deg`, visibility: hiddenTop === g.top.id ? 'hidden' : undefined }}>
+                      <Card card={g.top} />
+                    </div>
+                  </div>
+                  <div key={g.color} className="colorchip" style={{ '--c': `var(--${g.color})` }}>{g.color}</div>
                 </div>
               </div>
-              <div key={g.color} className="colorchip" style={{ '--c': `var(--${g.color})` }}>{g.color}</div>
             </div>
+            <p className={`status ${myTurn || mustDecide ? 'you' : ''}`}>{status}</p>
+            {waitingNames.length > 0 && <p className="chip joining"><Icon name="users" size={14} /> Joining next round: {waitingNames.join(', ')}</p>}
+            {room.timer && g.phase !== 'roundOver' && g.phase !== 'matchOver' && (
+              <TurnTimer timer={room.timer} total={room.settings.turnSeconds * 1000} mine={myTurn || mustDecide} name={actorId ? nameOf(actorId) : ''} />
+            )}
+            {s.gfx !== 'low' && <ul className="log">{g.log.map((l, i) => <li key={i}>{l}</li>)}</ul>}
           </div>
         </div>
-        <p className={`status ${myTurn || mustDecide ? 'you' : ''}`}>{status}</p>
-        {waitingNames.length > 0 && <p className="chip joining"><Icon name="users" size={14} /> Joining next round: {waitingNames.join(', ')}</p>}
-        {room.timer && g.phase !== 'roundOver' && g.phase !== 'matchOver' && (
-          <TurnTimer timer={room.timer} total={room.settings.turnSeconds * 1000} mine={myTurn || mustDecide} name={actorId ? nameOf(actorId) : ''} />
-        )}
-        {s.gfx !== 'low' && <ul className="log">{g.log.map((l, i) => <li key={i}>{l}</li>)}</ul>}
       </section>
 
       {isSpectator ? (
@@ -161,6 +194,13 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
         </section>
       ) : (
         <section className="me" data-pid={me}>
+          {mine && (
+            <div className={`myseat ${myTurn || mustDecide ? 'turn' : ''}`}>
+              <Avatar name={mine.name} size={26} />
+              <b>You</b>
+              <span className="oscore">{mine.score} pts</span>
+            </div>
+          )}
           <div className="actions">
             {mustDecide && (
               <>
@@ -174,9 +214,14 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
             )}
             {g.unoVulnId === me && <span className="warn">Say UNO!</span>}
             {myTurn && s.confirmTap && !hasDrawn && !sel && <span className="muted small">Tap a card to select, tap again to play</span>}
+            {n > 1 && (
+              <button className="ghost iconbtn sortbtn" onClick={() => updateSettings({ sort: SORT_NEXT[s.sort] ?? 'colour' })} aria-label={`Sort your hand. Now: ${SORT_LABEL[s.sort]}. Click to change`} title="Sort your hand">
+                <Icon name="sort" size={16} /> {SORT_LABEL[s.sort] ?? SORT_LABEL.none}
+              </button>
+            )}
           </div>
           <div className="hand">
-            {g.hand.map((c, i) => {
+            {hand.map((c, i) => {
               const d = i - (n - 1) / 2;
               return (
                 <Card key={c.id} card={c} enter selected={sel === c.id} playable={canPlay(c)} dim={myTurn && !canPlay(c)}
@@ -197,6 +242,7 @@ export default function Game({ room, me, act, leave, chatApi, emotes }) {
 
       <Flights g={g} me={me} lastPlay={lastPlay} enabled={fx} tilt={tilt} onLand={onLand} />
       <Bursts g={g} enabled={fx} onShake={doShake} />
+      <Penalties g={g} me={me} enabled={fx} />
       <EmoteLayer emotes={emotes} />
 
       {over && s.gfx !== 'low' && <Confetti count={s.gfx === 'high' ? 50 : 18} />}

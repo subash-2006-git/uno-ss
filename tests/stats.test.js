@@ -39,8 +39,22 @@ describe('match history & stats', () => {
     expect((await db.userStats('x')).recent[0].placing).toBe(2);
   });
 
+  it('adds average placing and podium finishes', async () => {
+    const ann = (await db.userStats('a')).summary;
+    expect(ann.avgPlace).toBe(1.3); // placings 1, 2, 1
+    expect(ann.podiums).toBe(3);
+  });
+
+  it('keeps computer players out of history and the leaderboard, but counts them in the placing', async () => {
+    await db.recordMatch('EEEEE', game([['a', 'Ann', 100, 0], ['bot-1', 'Nova', 520, 4], ['bot-2', 'Pixel', 300, 1]], 'bot-1'));
+    const ann = (await db.userStats('a')).recent[0];
+    expect(ann).toMatchObject({ roomCode: 'EEEEE', won: false, placing: 3, players: 3, winner: 'Nova' });
+    expect((await db.userStats('bot-1')).summary.played).toBe(0);
+    expect((await db.leaderboard()).some((r) => String(r.id).startsWith('bot-'))).toBe(false);
+  });
+
   it('builds a leaderboard by wins', async () => {
     const board = await db.leaderboard();
-    expect(board[0]).toMatchObject({ name: 'Ann', wins: 2, played: 3 });
+    expect(board[0]).toMatchObject({ name: 'Ann', wins: 2, played: 4 }); // includes the match with bots
   });
 });

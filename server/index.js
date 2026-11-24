@@ -12,22 +12,49 @@ import * as auth from './auth.js';
 
 const PORT = process.env.PORT || 3001;
 const ABSENT_MS = 8000;      // auto-move for a disconnected player after this long
-const MAX_MISSED = 3;        // ...and drop them after this many auto-moves in a row
+const MAX_MISSED = 3;        // ...and a bot takes their seat after this many auto-moves in a row
 const TURN_CHOICES = [0, 15, 30, 60]; // seconds per turn the host can pick; 0 = no limit
 const ROUND_CHOICES = [0, 1, 3, 5, 10]; // match length the host can pick; 0 = play until someone reaches 500
 const DEFAULT_SETTINGS = { turnSeconds: 30, rounds: 0 };
+const BOT_THINK_MS = Number(process.env.BOT_THINK_MS ?? 900);   // bots "think" this long (+ jitter) before moving
+const BOT_JITTER_MS = Number(process.env.BOT_JITTER_MS ?? 700);
+const BOT_NAMES = ['Nova', 'Pixel', 'Bolt', 'Echo', 'Juno', 'Milo', 'Ziggy', 'Luna', 'Rex', 'Kiki', 'Orbit', 'Sprout', 'Tango', 'Waffle', 'Pip', 'Zap'];
+
+// Abuse limits. Generous for real play, tight enough to stop scripts.
+const LIMIT = {
+  signupPerHourPerIp: Number(process.env.SIGNUP_LIMIT ?? 20),
+  pendingAccountsCap: 100,          // stop flooding the admin's approval queue
+  loginPerTenMinPerIp: 60,
+  apiPerMinPerIp: 600,
+  maxRooms: 300,
+  socketsPerIp: 40,
+  eventsPer5sPerPlayer: 60,
+};
 
 const app = express();
-app.set('trust proxy', 1); // behind Render's proxy: real client IP for the login lockout
+app.set('trust proxy', 1); // behind Render's proxy: real client IP for the limits
 app.use(compression());
 app.use(express.json({ limit: '10kb' }));
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, { maxHttpBufferSize: 1e5 });
 
-const players = new Map(); // id -> { id, name, token, socketId, roomCode }
+const players = new Map(); // id -> { id, name, socketId, roomCode, isAdmin }
 const rooms = new Map();   // code -> room
 
 /* ---------- helpers ---------- */
+
+const isBotId = (id) => String(id).startsWith('bot-');
+const isConnected = (id) => isBotId(id) || Boolean(players.get(id)?.socketId);
+// "member" = a person (or bot) currently at the table. A player who left a running game stays in the list
+// flagged `away`: a bot plays their seat and they can take it back.
+const isMember = (room, id) => room.members.some((m) => m.id === id && !m.away);
+const isSpectator = (room, id) => room.spectators.some((m) => m.id === id);
+const humansActive = (room) => room.members.filter((m) => !m.bot && !m.away);
+const seatOf = (room, id) => room.game?.players.find((p) => p.id === id);
+const everyone = (room) => [...humansActive(room), ...room.spectators];
+const MAX_SPECTATORS = 40;
+const SPECTATOR_GRACE_MS = 120000; // a disconnected spectator is removed after this long
+const CHAT_KEEP = 40;              // messages replayed to someone joining mid-conversation
 
 // Player entries are created on socket auth; rooms restored from Neon are re-linked here.
 function playerFor(user) {
@@ -38,6 +65,7 @@ function playerFor(user) {
     players.set(user.id, p);
   }
   p.name = user.username;
+  p.isAdmin = Boolean(user.isAdmin);
   return p;
 }
 
@@ -49,21 +77,13 @@ function makeCode() {
   }
 }
 
-const isConnected = (id) => Boolean(players.get(id)?.socketId);
-const isMember = (room, id) => room.members.some((m) => m.id === id);
-const isSpectator = (room, id) => room.spectators.some((m) => m.id === id);
-const everyone = (room) => [...room.members, ...room.spectators];
-const MAX_SPECTATORS = 40;
-const SPECTATOR_GRACE_MS = 120000; // a disconnected spectator is removed after this long
-const CHAT_KEEP = 40;              // messages replayed to someone joining mid-conversation
-
 function roomView(room, pid) {
   return {
     code: room.code,
     hostId: room.hostId,
     status: room.status,
     role: isMember(room, pid) ? 'player' : 'spectator',
-    members: room.members.map((m) => ({ id: m.id, name: m.name, connected: isConnected(m.id) })),
+    members: room.members.map((m) => ({ id: m.id, name: m.name, bot: Boolean(m.bot), away: Boolean(m.away), connected: isConnected(m.id) })),
     spectators: room.spectators.map((m) => ({ id: m.id, name: m.name, connected: isConnected(m.id), waiting: room.waiting.includes(m.id) })),
     waiting: room.waiting,
     seatsFree: Math.max(0, U.MAX_PLAYERS - room.members.length - room.waiting.length),
@@ -90,7 +110,14 @@ function broadcast(room) {
 
 const sendHistory = (room, p) => { if (p.socketId) io.to(p.socketId).emit('chat_history', room.chat); };
 
-// Called after every state change: record finished matches, persist, re-arm the turn clock, push.
+// Tells a player (on the home screen) whether a game is holding a seat for them.
+function sendRejoin(p) {
+  if (!p.socketId) return;
+  const r = [...rooms.values()].find((x) => x.status === 'playing' && x.members.some((m) => m.id === p.id && m.away));
+  io.to(p.socketId).emit('rejoin_info', { code: r?.code ?? null });
+}
+
+// Called after every state change: record finished matches, persist, re-arm the clocks, push.
 function commit(room) {
   const g = room.game;
   if (g && g.phase === 'matchOver' && !g.recorded) {
@@ -107,13 +134,37 @@ function clearClock(room) {
   clearTimeout(room.timer);
   room.timer = null; room.timerKey = null; room.deadline = null;
 }
+function clearBot(room) {
+  clearTimeout(room.botTimer);
+  room.botTimer = null; room.botKey = null;
+}
+
+// A bot-controlled seat moves after a short "think". Like the turn clock it only re-arms when the decision changes.
+function armBot(room, id) {
+  const g = room.game;
+  const key = `${id}|${g.phase}|${g.round}|${g.discard.length}|${g.drawnCardId}|${g.deck.length}`;
+  if (key === room.botKey && room.botTimer) return;
+  clearTimeout(room.botTimer);
+  room.botKey = key;
+  room.botTimer = setTimeout(() => {
+    room.botTimer = null; room.botKey = null;
+    const cur = room.game;
+    if (!cur || room.status !== 'playing' || U.actorId(cur) !== id || !seatOf(room, id)?.bot) return;
+    const r = U.botMove(cur, id);
+    if (!r.ok) { console.error('[bot]', r.error); U.autoMove(cur, id); } // never let a bot stall the table
+    commit(room);
+  }, BOT_THINK_MS + Math.random() * BOT_JITTER_MS);
+}
 
 // One clock per pending decision. It only restarts when the decision itself changes
 // (different actor / card played / card drawn), so spamming UNO or reconnecting can't stall it.
 function armTimer(room) {
   const g = room.game;
   const id = g && room.status === 'playing' ? U.actorId(g) : null;
-  if (!id) return clearClock(room);
+  if (!id) { clearClock(room); clearBot(room); return; }
+  if (seatOf(room, id)?.bot) { clearClock(room); armBot(room, id); return; }
+  clearBot(room);
+
   const connected = isConnected(id);
   const secs = room.settings.turnSeconds;
   if (connected && !secs) return clearClock(room);
@@ -130,32 +181,44 @@ function armTimer(room) {
     const cur = room.game;
     if (!cur || room.status !== 'playing' || U.actorId(cur) !== id) return;
     room.missed[id] = (room.missed[id] ?? 0) + 1;
-    if (room.missed[id] >= MAX_MISSED) dropMember(room, id, 'Removed from the game for being inactive');
+    if (room.missed[id] >= MAX_MISSED) dropMember(room, id, 'You were inactive, so a bot took your seat. You can rejoin from the home screen.');
     else { U.autoMove(cur, id); commit(room); }
   }, ms);
 }
 
+function reassignHost(room) {
+  const humans = humansActive(room);
+  const next = humans.find((m) => isConnected(m.id)) ?? humans[0];
+  if (next) room.hostId = next.id;
+}
+
+function closeRoom(room, message = 'The game ended because all players left') {
+  for (const s of room.spectators) { // nobody left to play with
+    const sp = players.get(s.id);
+    if (sp?.socketId) io.to(sp.socketId).emit('kicked', { message });
+    if (sp) sp.roomCode = null;
+  }
+  clearClock(room); clearBot(room);
+  rooms.delete(room.code);
+  db.deleteRoom(room.code);
+}
+
+// A person leaves (button, inactivity, joining elsewhere). In a running game their seat is kept: a bot plays it
+// and they can reclaim it. In a lobby or after the match they simply go.
 function dropMember(room, id, kickMessage) {
   const p = players.get(id);
   if (kickMessage && p?.socketId) io.to(p.socketId).emit('kicked', { message: kickMessage });
   if (p && p.roomCode === room.code) p.roomCode = null;
-  room.members = room.members.filter((m) => m.id !== id);
-  if (room.game && room.status === 'playing') U.removePlayer(room.game, id);
-  if (!room.members.length) {
-    for (const s of room.spectators) { // nobody left to watch
-      const sp = players.get(s.id);
-      if (sp?.socketId) io.to(sp.socketId).emit('kicked', { message: 'The game ended because all players left' });
-      if (sp) sp.roomCode = null;
-    }
-    clearClock(room);
-    rooms.delete(room.code);
-    db.deleteRoom(room.code);
-    return;
-  }
-  if (room.hostId === id) {
-    room.hostId = (room.members.find((m) => isConnected(m.id)) ?? room.members[0]).id;
-  }
+  const m = room.members.find((x) => x.id === id);
+  if (!m) return;
+  const inGame = Boolean(room.game) && room.status === 'playing' && !m.bot;
+  if (inGame) { m.away = true; U.setSeatBot(room.game, id, true); }
+  else room.members = room.members.filter((x) => x.id !== id);
+
+  if (!humansActive(room).length) return closeRoom(room);
+  if (room.hostId === id || !humansActive(room).some((h) => h.id === room.hostId)) reassignHost(room);
   commit(room);
+  if (inGame && p) sendRejoin(p);
 }
 
 function removeSpectator(room, id, kickMessage) {
@@ -193,25 +256,51 @@ function admitWaiting(room) {
 function newRoom(code, host) {
   return {
     code, hostId: host.id, status: 'lobby', members: [{ id: host.id, name: host.name }], spectators: [], waiting: [], chat: [],
-    game: null, timer: null, timerKey: null, deadline: null, missed: {}, settings: { ...DEFAULT_SETTINGS },
+    game: null, timer: null, timerKey: null, deadline: null, botTimer: null, botKey: null, missed: {}, settings: { ...DEFAULT_SETTINGS },
   };
 }
 
 const roomOf = (p) => (p.roomCode ? rooms.get(p.roomCode) : null);
 
+function pickBotName(room) {
+  const used = new Set(room.members.map((m) => m.name));
+  const free = BOT_NAMES.filter((n) => !used.has(n));
+  return free.length ? free[Math.floor(Math.random() * free.length)] : `Bot ${room.members.length + 1}`;
+}
+
+// Tell every connected admin how many accounts wait for approval (and who just asked, if anyone).
+async function notifyAdmins(newUser) {
+  const pending = (await db.listUsers()).filter((u) => u.status === 'pending').length;
+  for (const p of players.values()) if (p.isAdmin && p.socketId) io.to(p.socketId).emit('admin_pending', { pending, newUser: newUser ?? null });
+}
+
 /* ---------- sockets ---------- */
+
+const ipOfSocket = (socket) => String(socket.handshake.headers['x-forwarded-for'] ?? socket.handshake.address ?? '').split(',')[0].trim();
+const socketsByIp = new Map();
+
+io.use((socket, next) => {
+  const ip = ipOfSocket(socket);
+  const n = socketsByIp.get(ip) ?? 0;
+  if (n >= LIMIT.socketsPerIp) return next(new Error('Too many connections from your network'));
+  socketsByIp.set(ip, n + 1);
+  socket.data.ip = ip;
+  next();
+});
 
 io.on('connection', (socket) => {
   let me = null;
 
-  // Wrap a handler: requires auth, passes (player, room, payload), replies via ack.
-  const on = (event, { needRoom = true } = {}, fn) => socket.on(event, (payload, ack) => {
+  // Wrap a handler: requires auth, rate-limits, passes (player, room, payload), replies via ack.
+  const on = (event, { needRoom = true, limit } = {}, fn) => socket.on(event, (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     try {
       if (!me) return reply({ ok: false, error: 'Not signed in' });
+      if (!auth.allow(`ev|${me.id}`, LIMIT.eventsPer5sPerPlayer, 5000)) return reply({ ok: false, error: 'Too many requests. Slow down a little.' });
+      if (limit && !auth.allow(`${event}|${me.id}`, limit[0], limit[1])) return reply({ ok: false, error: 'Too many requests. Slow down a little.' });
       const room = roomOf(me);
       if (needRoom && !room) return reply({ ok: false, error: 'You are not in a room' });
-      reply(fn(me, room, payload ?? {}) ?? { ok: true });
+      reply(fn(me, room, payload && typeof payload === 'object' ? payload : {}) ?? { ok: true });
     } catch (e) {
       console.error(event, e);
       reply({ ok: false, error: 'Server error' });
@@ -221,6 +310,7 @@ io.on('connection', (socket) => {
   // Sockets sign in with the session token from /api/login. Only approved users get in.
   socket.on('auth', async (payload, ack) => {
     try {
+      if (!auth.allow(`auth|${socket.data.ip}`, 120, 60000)) return ack?.({ ok: false, error: 'Too many attempts' });
       const user = await userFromToken(payload?.token);
       if (!user) return ack?.({ ok: false, error: 'Please log in again' });
       if (user.status !== 'approved') return ack?.({ ok: false, error: 'Account not approved' });
@@ -230,14 +320,16 @@ io.on('connection', (socket) => {
       p.socketId = socket.id;
       ack?.({ ok: true, name: p.name });
       const room = roomOf(p);
-      if (room) { room.missed[p.id] = 0; commit(room); sendHistory(room, p); }
+      if (room) { room.missed[p.id] = 0; commit(room); sendHistory(room, p); } else sendRejoin(p);
+      if (p.isAdmin) notifyAdmins();
     } catch (e) {
       console.error('auth', e);
       ack?.({ ok: false, error: 'Server error' });
     }
   });
 
-  on('create_room', { needRoom: false }, (p) => {
+  on('create_room', { needRoom: false, limit: [6, 60000] }, (p) => {
+    if (rooms.size >= LIMIT.maxRooms) return { ok: false, error: 'The server is full right now. Try again in a bit.' };
     const old = roomOf(p);
     if (old) leaveRoom(old, p.id);
     const room = newRoom(makeCode(), p);
@@ -246,11 +338,25 @@ io.on('connection', (socket) => {
     commit(room);
   });
 
-  // Joining a lobby seats you as a player. Joining a game in progress makes you a spectator
-  // (who can then ask for a seat in the next round).
-  on('join_room', { needRoom: false }, (p, _r, { code }) => {
+  // Joining a lobby seats you as a player. Joining a game in progress makes you a spectator (who can then ask for
+  // a seat in the next round), unless a seat is being held for you: then you take it back from the bot.
+  on('join_room', { needRoom: false, limit: [20, 60000] }, (p, _r, { code }) => {
     const room = rooms.get(String(code ?? '').toUpperCase().trim());
     if (!room) return { ok: false, error: 'Room not found' };
+
+    const held = room.members.find((m) => m.id === p.id && m.away);
+    if (held && room.status === 'playing' && room.game) {
+      const old = roomOf(p);
+      if (old && old !== room) leaveRoom(old, p.id);
+      held.away = false;
+      U.setSeatBot(room.game, p.id, false);
+      room.missed[p.id] = 0;
+      p.roomCode = room.code;
+      if (!humansActive(room).some((h) => h.id === room.hostId)) room.hostId = p.id;
+      commit(room);
+      sendHistory(room, p);
+      return { ok: true, role: 'player', rejoined: true };
+    }
     if (isMember(room, p.id) || isSpectator(room, p.id)) {
       p.roomCode = room.code; commit(room); sendHistory(room, p);
       return { ok: true, role: isMember(room, p.id) ? 'player' : 'spectator' };
@@ -270,7 +376,7 @@ io.on('connection', (socket) => {
   on('leave_room', {}, (p, room) => { leaveRoom(room, p.id); });
 
   // Spectator -> player. In a lobby: sit down now. In a game: queue for the next round.
-  on('request_seat', {}, (p, room) => {
+  on('request_seat', { limit: [15, 60000] }, (p, room) => {
     if (!isSpectator(room, p.id)) return { ok: false, error: 'You are already playing' };
     if (room.waiting.includes(p.id)) return { ok: true };
     if (room.members.length + room.waiting.length >= U.MAX_PLAYERS) return { ok: false, error: 'No free seats' };
@@ -283,6 +389,24 @@ io.on('connection', (socket) => {
 
   on('cancel_seat', {}, (p, room) => {
     room.waiting = room.waiting.filter((x) => x !== p.id);
+    commit(room);
+  });
+
+  // Host fills empty seats with computer players (lobby only).
+  on('add_bot', { limit: [40, 60000] }, (p, room) => {
+    if (room.hostId !== p.id) return { ok: false, error: 'Only the host can add bots' };
+    if (room.status !== 'lobby') return { ok: false, error: 'Bots can only be added in the lobby' };
+    if (room.members.length + room.waiting.length >= U.MAX_PLAYERS) return { ok: false, error: `The table is full (${U.MAX_PLAYERS} max)` };
+    room.members.push({ id: `bot-${randomUUID().slice(0, 8)}`, name: pickBotName(room), bot: true });
+    commit(room);
+  });
+
+  on('remove_bot', { limit: [60, 60000] }, (p, room, { id }) => {
+    if (room.hostId !== p.id) return { ok: false, error: 'Only the host can remove bots' };
+    if (room.status !== 'lobby') return { ok: false, error: 'Bots can only be removed in the lobby' };
+    const bot = room.members.find((m) => m.id === id && m.bot);
+    if (!bot) return { ok: false, error: 'That bot is not here' };
+    room.members = room.members.filter((m) => m.id !== id);
     commit(room);
   });
 
@@ -366,6 +490,7 @@ io.on('connection', (socket) => {
     if (room.status !== 'finished') return { ok: false, error: 'Match is not over' };
     room.game = null;
     room.status = 'lobby';
+    room.members = room.members.filter((m) => !m.away); // people who left the match are not in the new lobby
     for (const id of room.waiting) { // spectators who asked for a seat sit down first
       const s = room.spectators.find((x) => x.id === id);
       if (s && room.members.length < U.MAX_PLAYERS) {
@@ -378,6 +503,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    const ip = socket.data.ip;
+    socketsByIp.set(ip, Math.max(0, (socketsByIp.get(ip) ?? 1) - 1));
     if (!me || me.socketId !== socket.id) return;
     me.socketId = null;
     const room = roomOf(me);
@@ -386,6 +513,19 @@ io.on('connection', (socket) => {
     commit(room);
   });
 });
+
+// Throw a person out of everything right now (suspension).
+function evict(userId, message) {
+  const p = players.get(userId);
+  if (!p) return;
+  const room = roomOf(p);
+  if (room) leaveRoom(room, userId);
+  if (p.socketId) {
+    const sid = p.socketId;
+    io.to(sid).emit('suspended', { message });
+    setTimeout(() => io.sockets.sockets.get(sid)?.disconnect(true), 150);
+  }
+}
 
 /* ---------- accounts (http) ---------- */
 
@@ -404,24 +544,44 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
 
 const bearer = (req) => (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
 
+async function approvedUser(req, res) {
+  const u = await userFromToken(bearer(req));
+  if (!u || u.status !== 'approved') { res.status(401).json({ error: 'Not logged in' }); return null; }
+  return u;
+}
+
 async function adminOnly(req, res) {
   const u = await userFromToken(bearer(req));
   if (!u || u.status !== 'approved' || !u.isAdmin) { res.status(403).json({ error: 'Admins only' }); return null; }
   return u;
 }
 
+// Every API call is limited per IP.
+app.use('/api', (req, res, next) => {
+  if (!auth.allow(`api|${req.ip}`, LIMIT.apiPerMinPerIp, 60000)) return res.status(429).json({ error: 'Too many requests. Please slow down.' });
+  next();
+});
+
 app.post('/api/signup', wrap(async (req, res) => {
+  if (!auth.allow(`signup|${req.ip}`, LIMIT.signupPerHourPerIp, 3600e3)) {
+    return res.status(429).json({ error: 'Too many sign-ups from your network. Try again later.' });
+  }
   const { username, password } = req.body ?? {};
   const bad = auth.validateUsername(username) || auth.validatePassword(password);
   if (bad) return res.status(400).json({ error: bad });
+  if ((await db.listUsers()).filter((u) => u.status === 'pending').length >= LIMIT.pendingAccountsCap) {
+    return res.status(503).json({ error: 'Sign-ups are paused until an admin clears the waiting list.' });
+  }
   const user = await db.createUser({ id: randomUUID(), username, hash: await auth.hashPassword(password) });
   if (!user) return res.status(409).json({ error: 'That username is taken' });
   res.status(201).json({ ok: true, status: 'pending' });
+  notifyAdmins(user.username);
 }));
 
 app.post('/api/login', wrap(async (req, res) => {
   const { username, password } = req.body ?? {};
   if (typeof username !== 'string' || typeof password !== 'string') return res.status(400).json({ error: 'Enter username and password' });
+  if (!auth.allow(`login|${req.ip}`, LIMIT.loginPerTenMinPerIp, 600e3)) return res.status(429).json({ error: 'Too many log-in attempts. Try again in a few minutes.' });
   const key = `${req.ip}|${username.toLowerCase()}`;
   if (auth.isLockedOut(key)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
   const user = await db.getUserByName(username);
@@ -432,15 +592,15 @@ app.post('/api/login', wrap(async (req, res) => {
   auth.clearFailures(key);
   if (user.status === 'pending') return res.status(403).json({ status: 'pending', error: 'Your account is waiting for admin approval.' });
   if (user.status === 'rejected') return res.status(403).json({ status: 'rejected', error: 'Your account request was declined.' });
+  if (user.status === 'suspended') return res.status(403).json({ status: 'suspended', error: 'Your account is suspended. Ask the admin.' });
   const token = auth.newToken();
   await db.createSession(auth.hashToken(token), user.id);
   res.json({ token, user: publicUser(user) });
 }));
 
 app.get('/api/me', wrap(async (req, res) => {
-  const u = await userFromToken(bearer(req));
-  if (!u || u.status !== 'approved') return res.status(401).json({ error: 'Not logged in' });
-  res.json({ user: publicUser(u) });
+  const u = await approvedUser(req, res);
+  if (u) res.json({ user: publicUser(u) });
 }));
 
 app.post('/api/logout', wrap(async (req, res) => {
@@ -469,6 +629,15 @@ app.post('/api/admin/users/:id/:action', wrap(async (req, res) => {
     if (target.isAdmin) return res.status(400).json({ error: 'Cannot reject an admin' });
     await db.updateUser(target.id, { status: 'rejected' });
     await db.deleteUserSessions(target.id);
+  } else if (action === 'suspend') {
+    if (target.isAdmin) return res.status(400).json({ error: 'Cannot suspend an admin' });
+    if (target.status !== 'approved') return res.status(400).json({ error: 'Only approved users can be suspended' });
+    await db.updateUser(target.id, { status: 'suspended' });
+    await db.deleteUserSessions(target.id);
+    evict(target.id, 'Your account was suspended by an admin.');
+  } else if (action === 'reinstate') {
+    if (target.status !== 'suspended') return res.status(400).json({ error: 'That user is not suspended' });
+    await db.updateUser(target.id, { status: 'approved' });
   } else if (action === 'reset-password') {
     const bad = auth.validatePassword(req.body?.password);
     if (bad) return res.status(400).json({ error: bad });
@@ -477,6 +646,7 @@ app.post('/api/admin/users/:id/:action', wrap(async (req, res) => {
   } else return res.status(404).json({ error: 'Unknown action' });
 
   res.json({ ok: true, user: publicUser(await db.getUserById(target.id)) });
+  notifyAdmins();
 }));
 
 // The admin account comes from .env and is re-synced on every start.
@@ -497,14 +667,23 @@ async function seedAdmin() {
   console.log(`[auth] admin "${username}" ready`);
 }
 
-/* ---------- http ---------- */
+/* ---------- stats & profiles (http) ---------- */
 
-app.get('/api/leaderboard', async (_req, res) => res.json((await db.leaderboard()) ?? []));
+app.get('/api/leaderboard', wrap(async (_req, res) => res.json((await db.leaderboard()) ?? [])));
+
 app.get('/api/stats/me', wrap(async (req, res) => {
-  const u = await userFromToken(bearer(req));
-  if (!u || u.status !== 'approved') return res.status(401).json({ error: 'Not logged in' });
-  res.json(await db.userStats(u.id));
+  const u = await approvedUser(req, res);
+  if (u) res.json({ user: { id: u.id, username: u.username }, ...(await db.userStats(u.id)) });
 }));
+
+// Anyone logged in can look at another player's profile (stats and recent matches).
+app.get('/api/profile/:id', wrap(async (req, res) => {
+  if (!(await approvedUser(req, res))) return;
+  const target = await db.getUserById(req.params.id);
+  if (!target || (target.status !== 'approved' && target.status !== 'suspended')) return res.status(404).json({ error: 'Player not found' });
+  res.json({ user: { id: target.id, username: target.username }, ...(await db.userStats(target.id)) });
+}));
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, db: db.dbEnabled, rooms: rooms.size }));
 
 const dist = path.resolve(import.meta.dirname, '../client/dist');
@@ -523,10 +702,10 @@ async function restore() {
       code: r.code, hostId: r.host_id, status: r.status,
       members: r.data.members ?? [], game: r.data.game ?? null, missed: {},
       spectators: r.data.spectators ?? [], waiting: r.data.waiting ?? [], chat: [],
-      timer: null, timerKey: null, deadline: null,
+      timer: null, timerKey: null, deadline: null, botTimer: null, botKey: null,
       settings: { ...DEFAULT_SETTINGS, ...(r.data.settings ?? {}) },
     };
-    if (room.status === 'finished' || !room.members.length) continue;
+    if (room.status === 'finished' || !humansActive(room).length) continue;
     rooms.set(room.code, room);
     for (const s of room.spectators) scheduleSpectatorPrune(room, s.id); // nobody is connected right after a restart
     armTimer(room);

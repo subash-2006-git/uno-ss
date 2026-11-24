@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useSettings } from '../settings.js';
 import Icon from '../components/Icon.jsx';
+import Avatar from '../components/Avatar.jsx';
 
 function useCountUp(target, enabled, ms = 900) {
   const [v, setV] = useState(enabled ? 0 : target);
@@ -20,11 +21,11 @@ function useCountUp(target, enabled, ms = 900) {
   return v;
 }
 
-function Tile({ label, value, suffix = '', accent, animate, i }) {
-  const v = useCountUp(value, animate);
+function Tile({ label, value, suffix = '', accent, animate, i, decimals }) {
+  const v = useCountUp(decimals ? Math.round(value * 10) : value, animate);
   return (
     <div className={`tile-stat ${accent ?? ''}`} style={{ '--i': i }}>
-      <b>{v}{suffix}</b>
+      <b>{decimals ? (v / 10).toFixed(1) : v}{suffix}</b>
       <span>{label}</span>
     </div>
   );
@@ -52,22 +53,33 @@ function ordinal(n) {
   return `${n}${{ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] ?? 'th'}`;
 }
 
-export default function Stats({ token, onBack, notify }) {
+const PAGE = 10;
+
+// userId set: another player's profile. Not set: my own stats.
+export default function Stats({ token, userId, onBack, notify }) {
   const { gfx } = useSettings();
   const animate = gfx !== 'low';
   const [data, setData] = useState(null);
+  const [shown, setShown] = useState(PAGE);
+  const mine = !userId;
 
   useEffect(() => {
-    api('/api/stats/me', { token }).then((res) => {
-      if (!res.ok) { notify(res.error || 'Could not load your stats'); setData({ summary: null, recent: [] }); } else setData(res);
+    setData(null);
+    setShown(PAGE);
+    api(mine ? '/api/stats/me' : `/api/profile/${userId}`, { token }).then((res) => {
+      if (!res.ok) { notify(res.error || 'Could not load stats'); setData({ summary: null, recent: [], user: null }); } else setData(res);
     });
-  }, [token, notify]);
+  }, [token, userId, mine, notify]);
 
   const s = data?.summary;
+  const name = data?.user?.username;
   return (
     <main className="home wideview page">
       <div className="whoami">
-        <h2>My stats</h2>
+        <h2 className="profilehead">
+          {!mine && name && <Avatar name={name} size={34} />}
+          {mine ? 'My stats' : name ?? 'Profile'}
+        </h2>
         <span><button className="ghost" onClick={onBack}>Back</button></span>
       </div>
 
@@ -77,7 +89,7 @@ export default function Stats({ token, onBack, notify }) {
         <div className="panel emptystate">
           <Icon name="trophy" size={40} />
           <h3>No finished matches yet</h3>
-          <p className="muted">Play a match all the way to 500 points and your stats will show up here.</p>
+          <p className="muted">{mine ? 'Play a match to the end and your stats will show up here.' : `${name ?? 'This player'} has not finished a match yet.`}</p>
         </div>
       )}
 
@@ -89,17 +101,19 @@ export default function Stats({ token, onBack, notify }) {
               <Tile i={0} label="Matches" value={s.played} animate={animate} />
               <Tile i={1} label="Wins" value={s.wins} accent="gold" animate={animate} />
               <Tile i={2} label="Win streak" value={s.streak} animate={animate} />
-              <Tile i={3} label="Avg score" value={s.avgScore} animate={animate} />
-              <Tile i={4} label="Best score" value={s.bestScore} animate={animate} />
+              <Tile i={3} label="Podiums" value={s.podiums ?? 0} animate={animate} />
+              <Tile i={4} label="Avg place" value={s.avgPlace ?? 0} decimals animate={animate} />
               <Tile i={5} label="Rounds won" value={s.roundsWon} animate={animate} />
+              <Tile i={6} label="Avg score" value={s.avgScore} animate={animate} />
+              <Tile i={7} label="Best score" value={s.bestScore} animate={animate} />
             </div>
           </div>
 
           <div className="panel">
-            <h3>Recent matches</h3>
+            <h3>Match history <small className="muted">({data.recent.length}{data.recent.length >= 100 ? '+' : ''})</small></h3>
             <ul className="history">
-              {data.recent.map((r, i) => (
-                <li key={r.id} style={{ '--i': i }}>
+              {data.recent.slice(0, shown).map((r, i) => (
+                <li key={r.id} style={{ '--i': i % PAGE }}>
                   <span className={`place p${Math.min(r.placing ?? 9, 4)}`}>{ordinal(r.placing)}</span>
                   <span className="hmain">
                     <b>{r.won ? 'Victory' : `${r.winner ?? 'Someone'} won`}</b>
@@ -109,6 +123,9 @@ export default function Stats({ token, onBack, notify }) {
                 </li>
               ))}
             </ul>
+            {shown < data.recent.length && (
+              <button className="ghost" onClick={() => setShown((n) => n + PAGE)}>Show {Math.min(PAGE, data.recent.length - shown)} more</button>
+            )}
           </div>
         </>
       )}

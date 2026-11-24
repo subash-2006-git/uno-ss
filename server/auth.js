@@ -29,6 +29,21 @@ export function validatePassword(p) {
   return null;
 }
 
+// General sliding-window limiter: allow(key, max, windowMs) is true while fewer than `max` hits happened in the window.
+const hits = new Map();
+export function allow(key, max, windowMs, now = Date.now()) {
+  const recentHits = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+  if (recentHits.length >= max) { hits.set(key, recentHits); return false; }
+  recentHits.push(now);
+  hits.set(key, recentHits);
+  return true;
+}
+// Forget idle keys so the map cannot grow forever.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of hits) if (!v.length || now - v[v.length - 1] > 3600e3) hits.delete(k);
+}, 600e3).unref();
+
 // Tiny in-memory brake on password guessing: 8 failures per 10 minutes per ip+username.
 const fails = new Map();
 const WINDOW = 10 * 60 * 1000;

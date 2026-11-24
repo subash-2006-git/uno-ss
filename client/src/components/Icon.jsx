@@ -25,6 +25,10 @@ const PATHS = {
   smile: (<><circle cx="12" cy="12" r="9" /><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" /></>),
   chart: <path d="M4 20V10M10 20V4M16 20v-8M22 20H2" />,
   close: <path d="M6 6l12 12M18 6L6 18" />,
+  search: (<><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" /></>),
+  bot: (<><rect x="5" y="8" width="14" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9 16.5h6" /></>),
+  sort: <path d="M4 7h16M7 12h10M10 17h4" />,
+  plus: <path d="M12 5v14M5 12h14" />,
   users: (<><circle cx="9" cy="8" r="3.2" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 5a3 3 0 0 1 0 6M18 14c2 .8 3 2.7 3 6" /></>),
 };
 

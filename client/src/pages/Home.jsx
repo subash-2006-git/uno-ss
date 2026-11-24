@@ -5,7 +5,7 @@ import FloatingCards from '../components/FloatingCards.jsx';
 import Avatar from '../components/Avatar.jsx';
 import Icon from '../components/Icon.jsx';
 
-export default function Home({ user, act, logout, openAdmin, openStats, notify }) {
+export default function Home({ user, act, logout, openAdmin, openStats, openProfile, notify, rejoin, clearRejoin, pending }) {
   const [code, setCode] = useState('');
   const [board, setBoard] = useState([]);
 
@@ -18,6 +18,11 @@ export default function Home({ user, act, logout, openAdmin, openStats, notify }
     if (res?.ok && res.role === 'spectator') notify('That game is in progress. You are watching, and can ask for a seat.');
   };
 
+  const takeSeatBack = async () => {
+    const res = await act('join_room', { code: rejoin });
+    if (!res?.ok) clearRejoin(); // the game is over or the room is gone
+  };
+
   return (
     <main className="home page">
       <FloatingCards />
@@ -27,10 +32,24 @@ export default function Home({ user, act, logout, openAdmin, openStats, notify }
         <span>
           <SettingsButton />
           <button className="ghost iconbtn" onClick={openStats} aria-label="My stats"><Icon name="chart" /> <span className="hide-sm">My stats</span></button>
-          {user.isAdmin && <button className="ghost" onClick={openAdmin}>Manage users</button>}
+          {user.isAdmin && (
+            <button className="ghost iconbtn" onClick={openAdmin}>
+              Manage users{pending > 0 && <span className="badge-inline">{pending}</span>}
+            </button>
+          )}
           <button className="ghost" onClick={logout}>Log out</button>
         </span>
       </div>
+
+      {rejoin && (
+        <div className="panel rejoin" role="status">
+          <div>
+            <b>A game is holding your seat</b>
+            <p className="muted small left">You left room {rejoin} while it was running. A bot is playing for you until you come back.</p>
+          </div>
+          <button className="primary" onClick={takeSeatBack}>Rejoin game</button>
+        </div>
+      )}
 
       <div className="panel">
         <button className="primary" onClick={() => act('create_room')}>Create room</button>
@@ -49,9 +68,11 @@ export default function Home({ user, act, logout, openAdmin, openStats, notify }
           <ol className="board">
             {board.map((r, i) => (
               <li key={r.id} className={`r${i + 1}`} style={{ '--i': i }}>
-                <span className="rank">{i + 1}</span>
-                <span className="bname">{r.name}</span>
-                <span className="bstat">{r.wins} wins · {r.played ? Math.round((r.wins / r.played) * 100) : 0}%</span>
+                <button className="boardrow" onClick={() => openProfile(r.id)} aria-label={`Open ${r.name}'s profile`}>
+                  <span className="rank">{i + 1}</span>
+                  <span className="bname">{r.name}</span>
+                  <span className="bstat">{r.wins} wins · {r.played ? Math.round((r.wins / r.played) * 100) : 0}%</span>
+                </button>
               </li>
             ))}
           </ol>

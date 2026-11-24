@@ -12,7 +12,10 @@ import Game from './pages/Game.jsx';
 export default function App() {
   const [session, setSession] = useState(loadSession); // { token, user: { id, username, isAdmin } }
   const [room, setRoom] = useState(null);
-  const [view, setView] = useState('home'); // home | admin | stats
+  const [view, setView] = useState('home'); // home | admin | stats | profile
+  const [profileId, setProfileId] = useState(null);
+  const [rejoin, setRejoin] = useState(null);       // code of a running game that is holding my seat
+  const [adminInfo, setAdminInfo] = useState({ pending: 0, tick: 0 }); // admins: accounts waiting + a counter that triggers reloads
   const [chat, setChat] = useState([]);       // text messages for the current room
   const [emotes, setEmotes] = useState([]);   // reaction bubbles currently floating
   const [chatOpen, setChatOpenState] = useState(false);
@@ -50,7 +53,8 @@ export default function App() {
     };
     const onConnect = () => { setOnline(true); setReplaced(false); authenticate(); };
     // 'io server disconnect' = the server closed us on purpose (same account signed in somewhere else).
-    const onDisconnect = (reason) => { setOnline(false); if (reason === 'io server disconnect') setReplaced(true); };
+    // (not when we are logged out: e.g. after a suspension the server also closes the connection)
+    const onDisconnect = (reason) => { setOnline(false); if (reason === 'io server disconnect' && sessionRef.current) setReplaced(true); };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     const onKicked = ({ message }) => { setRoom(null); notify(message || 'You were removed from the game'); };
@@ -66,10 +70,19 @@ export default function App() {
         setTimeout(() => setEmotes((e) => e.filter((x) => x.key !== m.id)), 2800);
       }
     };
+    const onRejoin = ({ code }) => setRejoin(code ?? null);
+    const onPending = ({ pending, newUser }) => {
+      setAdminInfo((a) => ({ pending, tick: a.tick + 1 }));
+      if (newUser) { notify(`${newUser} asked for an account`); play('pop'); }
+    };
+    const onSuspended = ({ message }) => { dropSession(); notify(message || 'Your account was suspended'); };
     socket.on('room_update', setRoom);
     socket.on('kicked', onKicked);
     socket.on('chat_history', onHistory);
     socket.on('chat_msg', onMsg);
+    socket.on('rejoin_info', onRejoin);
+    socket.on('admin_pending', onPending);
+    socket.on('suspended', onSuspended);
     socket.connect();
     return () => {
       socket.off('connect', onConnect);
@@ -78,6 +91,9 @@ export default function App() {
       socket.off('kicked', onKicked);
       socket.off('chat_history', onHistory);
       socket.off('chat_msg', onMsg);
+      socket.off('rejoin_info', onRejoin);
+      socket.off('admin_pending', onPending);
+      socket.off('suspended', onSuspended);
     };
   }, [dropSession, notify]);
 
@@ -89,6 +105,10 @@ export default function App() {
 
   // After a successful HTTP login: remember the session and sign the socket in.
   const onLoggedIn = async ({ token, user }) => {
+    if (!socket.connected) { // the server may have closed our connection (e.g. after a suspension): reconnect first
+      socket.connect();
+      await new Promise((resolve) => { const t = setTimeout(resolve, 5000); socket.once('connect', () => { clearTimeout(t); resolve(); }); });
+    }
     const res = await send('auth', { token });
     if (!res.ok) return notify(res.error);
     const s = { token, user };
@@ -113,9 +133,15 @@ export default function App() {
   else if (room && (room.status === 'playing' || (room.status === 'finished' && room.game))) {
     page = <Game room={room} me={session.user.id} act={act} leave={leave} chatApi={chatApi} emotes={emotes} />;
   } else if (room) page = <Lobby room={room} me={session.user.id} act={act} leave={leave} chatApi={chatApi} emotes={emotes} />;
-  else if (view === 'admin') page = <Admin token={session.token} onBack={() => setView('home')} notify={notify} />;
+  else if (view === 'admin') page = <Admin token={session.token} tick={adminInfo.tick} onBack={() => setView('home')} notify={notify} />;
   else if (view === 'stats') page = <Stats token={session.token} onBack={() => setView('home')} notify={notify} />;
-  else page = <Home user={session.user} act={act} logout={logout} notify={notify} openAdmin={() => setView('admin')} openStats={() => setView('stats')} />;
+  else if (view === 'profile') page = <Stats token={session.token} userId={profileId} onBack={() => setView('home')} notify={notify} />;
+  else {
+    page = (
+      <Home user={session.user} act={act} logout={logout} notify={notify} rejoin={rejoin} clearRejoin={() => setRejoin(null)} pending={adminInfo.pending}
+        openAdmin={() => setView('admin')} openStats={() => setView('stats')} openProfile={(id) => { setProfileId(id); setView('profile'); }} />
+    );
+  }
 
   return (
     <div className="app">

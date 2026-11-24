@@ -18,6 +18,7 @@ function detectDefaults() {
     sound: true,
     volume: 0.6,
     confirmTap: touch, // phones: tap a card to raise it, tap again to play
+    sort: 'none',      // hand order: none (as dealt) | colour | number
     autoDetected: slowNet || weakDevice || reduceMotion,
   };
 }
