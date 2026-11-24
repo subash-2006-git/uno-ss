@@ -1,0 +1,22 @@
+{
+  "name": "uno-huh",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.11" },
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "test": "vitest run",
+    "db:init": "npm run db:init -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7",
+    "vitest": "^5.1.1"
+  }
+}

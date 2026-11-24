@@ -1,0 +1,18 @@
+# Render Blueprint: one web service serves the API, Socket.IO and the built React client.
+services:
+  - type: web
+    name: uno-huh
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: DATABASE_URL      # Neon connection string (pooled URL recommended)
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

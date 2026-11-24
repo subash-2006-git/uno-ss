@@ -1,0 +1,1 @@
+{ "name": "@uno/shared", "version": "1.0.0", "type": "module", "main": "uno.js", "exports": "./uno.js" }
