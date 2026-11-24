@@ -1,12 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { isPlayable } from '@uno/shared';
 import Card from '../components/Card.jsx';
 import ColorPicker from '../components/ColorPicker.jsx';
 import Scoreboard from '../components/Scoreboard.jsx';
+import TurnTimer from '../components/TurnTimer.jsx';
+import Confetti from '../components/Confetti.jsx';
+import SettingsButton from '../components/SettingsModal.jsx';
+import { useSettings } from '../settings.js';
+import { useGameFx, useLatency } from '../hooks.js';
+import { play as sfx } from '../sound.js';
 
 export default function Game({ room, me, act, leave }) {
   const g = room.game;
+  const s = useSettings();
   const [wild, setWild] = useState(null); // wild card awaiting a colour choice
+  const [sel, setSel] = useState(null);   // raised card (tap-twice mode)
+
   const nameOf = (id) => g.players.find((p) => p.id === id)?.name ?? '?';
   const myTurn = g.phase === 'play' && g.turn === me;
   const mustDecide = g.phase === 'challenge' && g.pending?.challenger === me;
@@ -14,10 +23,22 @@ export default function Game({ room, me, act, leave }) {
   const isHost = room.hostId === me;
   const hasDrawn = g.drawnCardId != null;
   const over = g.phase === 'roundOver' || g.phase === 'matchOver';
+  const actorId = g.phase === 'challenge' ? g.pending?.challenger : g.phase === 'play' ? g.turn : null;
+  const ping = useLatency(true, s.gfx === 'low' ? 15000 : 6000);
+
+  useGameFx(g, me);
+  useEffect(() => { setSel(null); }, [g.top.id, myTurn, g.drawnCardId, g.phase]);
+
+  // Keep the active opponent visible in the scrolling strip (phones).
+  useEffect(() => {
+    document.querySelector('.opp.turn')?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: s.gfx === 'low' ? 'auto' : 'smooth' });
+  }, [actorId, s.gfx]);
 
   const canPlay = (c) => myTurn && (!hasDrawn || c.id === g.drawnCardId) && isPlayable(c, g.top, g.color);
   const play = (c) => {
     if (!canPlay(c)) return;
+    if (s.confirmTap && sel !== c.id) { setSel(c.id); sfx('select'); return; }
+    setSel(null);
     if (c.color === 'wild') setWild(c);
     else act('play_card', { cardId: c.id });
   };
@@ -31,16 +52,22 @@ export default function Game({ room, me, act, leave }) {
   else if (myTurn) status = hasDrawn ? 'Play the drawn card or pass' : 'Your turn';
   else status = `${nameOf(g.turn)}'s turn`;
 
+  const quality = ping == null ? '' : ping < 120 ? 'good' : ping < 350 ? 'ok' : 'slow';
+
   return (
     <main className="game">
       <header className="topbar">
         <span>Room {room.code} · Round {g.round}</span>
-        <button className="ghost" onClick={() => window.confirm('Leave this game?') && leave()}>Leave</button>
+        <span className="topright">
+          {ping != null && <span className={`conn dot ${quality}`} title={`${ping} ms`}>{ping} ms</span>}
+          <SettingsButton />
+          <button className="ghost" onClick={() => window.confirm('Leave this game?') && leave()}>Leave</button>
+        </span>
       </header>
 
       <section className="opponents">
         {g.players.filter((p) => p.id !== me).map((p) => {
-          const active = (g.phase === 'play' && g.turn === p.id) || g.pending?.challenger === p.id;
+          const active = actorId === p.id;
           return (
             <div key={p.id} className={`opp ${active ? 'turn' : ''}`}>
               <div className="oname">{p.name}</div>
@@ -62,12 +89,15 @@ export default function Game({ room, me, act, leave }) {
             <small>{g.deckCount} left</small>
           </div>
           <div className="pile">
-            <Card card={g.top} />
-            <div className="colorchip" style={{ '--c': `var(--${g.color})` }}>{g.color}</div>
+            <div key={g.top.id} className="topcard"><Card card={g.top} /></div>
+            <div key={g.color} className="colorchip" style={{ '--c': `var(--${g.color})` }}>{g.color}</div>
           </div>
         </div>
         <p className="status">{status} <span className="dir">{g.dir === 1 ? '↻' : '↺'}</span></p>
-        <ul className="log">{g.log.map((l, i) => <li key={i}>{l}</li>)}</ul>
+        {room.timer && g.phase !== 'roundOver' && g.phase !== 'matchOver' && (
+          <TurnTimer timer={room.timer} total={room.settings.turnSeconds * 1000} mine={myTurn || mustDecide} name={actorId ? nameOf(actorId) : ''} />
+        )}
+        {s.gfx !== 'low' && <ul className="log">{g.log.map((l, i) => <li key={i}>{l}</li>)}</ul>}
       </section>
 
       <section className="me">
@@ -83,10 +113,11 @@ export default function Game({ room, me, act, leave }) {
             <button className="uno" onClick={() => act('call_uno')}>UNO!</button>
           )}
           {g.unoVulnId === me && <span className="warn">Say UNO!</span>}
+          {myTurn && s.confirmTap && !hasDrawn && !sel && <span className="muted small">Tap a card to select, tap again to play</span>}
         </div>
         <div className="hand">
           {g.hand.map((c) => (
-            <Card key={c.id} card={c} playable={canPlay(c)} dim={myTurn && !canPlay(c)} onClick={() => play(c)} />
+            <Card key={c.id} card={c} enter selected={sel === c.id} playable={canPlay(c)} dim={myTurn && !canPlay(c)} onClick={() => play(c)} />
           ))}
         </div>
       </section>
@@ -98,6 +129,7 @@ export default function Game({ room, me, act, leave }) {
         />
       )}
 
+      {over && s.gfx !== 'low' && <Confetti count={s.gfx === 'high' ? 50 : 18} />}
       {over && (
         <div className="modal-bg">
           <div className="modal wide">

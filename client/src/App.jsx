@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { socket, send, loadSession, saveSession, clearSession } from './socket.js';
 import { api } from './api.js';
+import { play } from './sound.js';
 import Auth from './pages/Auth.jsx';
 import Home from './pages/Home.jsx';
 import Admin from './pages/Admin.jsx';
@@ -26,7 +27,7 @@ export default function App() {
   // Run a socket action and surface any server-side error.
   const act = useCallback(async (event, payload) => {
     const res = await send(event, payload);
-    if (!res?.ok) notify(res?.error || 'Something went wrong');
+    if (!res?.ok) { notify(res?.error || 'Something went wrong'); play('error'); }
     return res;
   }, [notify]);
 
@@ -43,14 +44,17 @@ export default function App() {
     const onDisconnect = () => setOnline(false);
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
+    const onKicked = ({ message }) => { setRoom(null); notify(message || 'You were removed from the game'); };
     socket.on('room_update', setRoom);
+    socket.on('kicked', onKicked);
     socket.connect();
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('room_update', setRoom);
+      socket.off('kicked', onKicked);
     };
-  }, [dropSession]);
+  }, [dropSession, notify]);
 
   // After a successful HTTP login: remember the session and sign the socket in.
   const onLoggedIn = async ({ token, user }) => {

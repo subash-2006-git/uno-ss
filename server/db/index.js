@@ -99,7 +99,7 @@ export const saveRoom = safe('saveRoom', (room) =>
     `INSERT INTO rooms (code, host_id, status, data, updated_at) VALUES ($1,$2,$3,$4,now())
      ON CONFLICT (code) DO UPDATE SET host_id=$2, status=$3, data=$4, updated_at=now()`,
     [room.code, room.hostId, room.status,
-      JSON.stringify({ members: room.members, game: room.game })]));
+      JSON.stringify({ members: room.members, game: room.game, settings: room.settings })]));
 
 export const deleteRoom = safe('deleteRoom', (code) =>
   pool.query('DELETE FROM rooms WHERE code = $1', [code]));

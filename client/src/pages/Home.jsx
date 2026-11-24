@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import SettingsButton from '../components/SettingsModal.jsx';
 
 export default function Home({ user, act, logout, openAdmin }) {
   const [code, setCode] = useState('');
@@ -14,6 +15,7 @@ export default function Home({ user, act, logout, openAdmin }) {
       <div className="whoami">
         <span>Playing as <b>{user.username}</b>{user.isAdmin ? ' (admin)' : ''}</span>
         <span>
+          <SettingsButton />
           {user.isAdmin && <button className="ghost" onClick={openAdmin}>Manage users</button>}
           <button className="ghost" onClick={logout}>Log out</button>
         </span>

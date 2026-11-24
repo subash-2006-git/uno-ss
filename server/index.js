@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
+import compression from 'compression';
 import { Server } from 'socket.io';
 import * as U from '@uno/shared';
 import * as db from './db/index.js';
@@ -11,10 +12,13 @@ import * as auth from './auth.js';
 
 const PORT = process.env.PORT || 3001;
 const ABSENT_MS = 8000;      // auto-move for a disconnected player after this long
-const MAX_MISSED = 3;        // ...and drop them after this many auto-moves
+const MAX_MISSED = 3;        // ...and drop them after this many auto-moves in a row
+const TURN_CHOICES = [0, 15, 30, 60]; // seconds per turn the host can pick; 0 = no limit
+const DEFAULT_SETTINGS = { turnSeconds: 30 };
 
 const app = express();
 app.set('trust proxy', 1); // behind Render's proxy: real client IP for the login lockout
+app.use(compression());
 app.use(express.json({ limit: '10kb' }));
 const server = http.createServer(app);
 const io = new Server(server);
@@ -53,6 +57,8 @@ function roomView(room, pid) {
     status: room.status,
     members: room.members.map((m) => ({ id: m.id, name: m.name, connected: isConnected(m.id) })),
     game: room.game ? U.viewFor(room.game, pid) : null,
+    settings: room.settings,
+    timer: room.deadline ? { deadline: room.deadline, now: Date.now() } : null, // `now` lets clients correct clock skew
     limits: { min: U.MIN_PLAYERS, max: U.MAX_PLAYERS, target: U.WINNING_SCORE },
   };
 }
@@ -64,7 +70,7 @@ function broadcast(room) {
   }
 }
 
-// Called after every state change: record finished matches, persist, push, arm absence timer.
+// Called after every state change: record finished matches, persist, re-arm the turn clock, push.
 function commit(room) {
   const g = room.game;
   if (g && g.phase === 'matchOver' && !g.recorded) {
@@ -72,33 +78,51 @@ function commit(room) {
     room.status = 'finished';
     db.recordMatch(room.code, g);
   }
+  armTimer(room); // before broadcast so clients receive the fresh deadline
   db.saveRoom(room);
   broadcast(room);
-  armTimer(room);
 }
 
-function armTimer(room) {
+function clearClock(room) {
   clearTimeout(room.timer);
-  const g = room.game;
-  if (!g || room.status !== 'playing') return;
-  const id = U.actorId(g);
-  if (!id || isConnected(id)) return;
-  room.timer = setTimeout(() => {
-    const cur = room.game;
-    if (!cur || U.actorId(cur) !== id || isConnected(id)) return;
-    room.missed[id] = (room.missed[id] ?? 0) + 1;
-    if (room.missed[id] >= MAX_MISSED) dropMember(room, id);
-    else { U.autoMove(cur, id); commit(room); }
-  }, ABSENT_MS);
+  room.timer = null; room.timerKey = null; room.deadline = null;
 }
 
-function dropMember(room, id) {
+// One clock per pending decision. It only restarts when the decision itself changes
+// (different actor / card played / card drawn), so spamming UNO or reconnecting can't stall it.
+function armTimer(room) {
+  const g = room.game;
+  const id = g && room.status === 'playing' ? U.actorId(g) : null;
+  if (!id) return clearClock(room);
+  const connected = isConnected(id);
+  const secs = room.settings.turnSeconds;
+  if (connected && !secs) return clearClock(room);
+
+  const key = `${id}|${connected}|${g.phase}|${g.round}|${g.discard.length}|${g.drawnCardId}|${secs}`;
+  if (key === room.timerKey && room.timer) return;
+
+  clearTimeout(room.timer);
+  const ms = connected ? secs * 1000 : Math.min(ABSENT_MS, secs ? secs * 1000 : ABSENT_MS);
+  room.timerKey = key;
+  room.deadline = Date.now() + ms;
+  room.timer = setTimeout(() => {
+    room.timer = null; room.timerKey = null;
+    const cur = room.game;
+    if (!cur || room.status !== 'playing' || U.actorId(cur) !== id) return;
+    room.missed[id] = (room.missed[id] ?? 0) + 1;
+    if (room.missed[id] >= MAX_MISSED) dropMember(room, id, 'Removed from the game for being inactive');
+    else { U.autoMove(cur, id); commit(room); }
+  }, ms);
+}
+
+function dropMember(room, id, kickMessage) {
   const p = players.get(id);
+  if (kickMessage && p?.socketId) io.to(p.socketId).emit('kicked', { message: kickMessage });
   if (p && p.roomCode === room.code) p.roomCode = null;
   room.members = room.members.filter((m) => m.id !== id);
   if (room.game && room.status === 'playing') U.removePlayer(room.game, id);
   if (!room.members.length) {
-    clearTimeout(room.timer);
+    clearClock(room);
     rooms.delete(room.code);
     db.deleteRoom(room.code);
     return;
@@ -152,7 +176,10 @@ io.on('connection', (socket) => {
   on('create_room', { needRoom: false }, (p) => {
     const old = roomOf(p);
     if (old) dropMember(old, p.id);
-    const room = { code: makeCode(), hostId: p.id, status: 'lobby', members: [{ id: p.id, name: p.name }], game: null, timer: null, missed: {} };
+    const room = {
+      code: makeCode(), hostId: p.id, status: 'lobby', members: [{ id: p.id, name: p.name }],
+      game: null, timer: null, timerKey: null, deadline: null, missed: {}, settings: { ...DEFAULT_SETTINGS },
+    };
     rooms.set(room.code, room);
     p.roomCode = room.code;
     commit(room);
@@ -173,6 +200,17 @@ io.on('connection', (socket) => {
 
   on('leave_room', {}, (p, room) => { dropMember(room, p.id); });
 
+  on('set_settings', {}, (p, room, { turnSeconds }) => {
+    if (room.hostId !== p.id) return { ok: false, error: 'Only the host can change settings' };
+    if (room.status !== 'lobby') return { ok: false, error: 'Settings are locked once the game starts' };
+    if (!TURN_CHOICES.includes(turnSeconds)) return { ok: false, error: 'Invalid turn time' };
+    room.settings.turnSeconds = turnSeconds;
+    commit(room);
+  });
+
+  // Latency probe used by the client's connection indicator.
+  socket.on('ping_check', (_p, ack) => { if (typeof ack === 'function') ack(); });
+
   on('start_game', {}, (p, room) => {
     if (room.hostId !== p.id) return { ok: false, error: 'Only the host can start' };
     if (room.status !== 'lobby') return { ok: false, error: 'Already started' };
@@ -186,8 +224,9 @@ io.on('connection', (socket) => {
   // Game moves share one shape: run the engine function, push on success.
   const move = (event, run) => on(event, {}, (p, room, payload) => {
     if (room.status !== 'playing' || !room.game) return { ok: false, error: 'No game in progress' };
+    const wasActor = U.actorId(room.game) === p.id;
     const r = run(room.game, p.id, payload);
-    if (r.ok) { room.missed[p.id] = 0; commit(room); }
+    if (r.ok) { if (wasActor) room.missed[p.id] = 0; commit(room); }
     return r;
   });
 
@@ -332,6 +371,8 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, db: db.dbEnabled, roo
 
 const dist = path.resolve(import.meta.dirname, '../client/dist');
 if (fs.existsSync(dist)) {
+  // Hashed build files never change, so browsers can cache them for a year (big win on slow networks).
+  app.use('/assets', express.static(path.join(dist, 'assets'), { maxAge: '365d', immutable: true }));
   app.use(express.static(dist));
   app.get(/^(?!\/api|\/socket\.io).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
@@ -342,7 +383,9 @@ async function restore() {
   for (const r of (await db.loadRooms()) ?? []) {
     const room = {
       code: r.code, hostId: r.host_id, status: r.status,
-      members: r.data.members ?? [], game: r.data.game ?? null, timer: null, missed: {},
+      members: r.data.members ?? [], game: r.data.game ?? null, missed: {},
+      timer: null, timerKey: null, deadline: null,
+      settings: { ...DEFAULT_SETTINGS, ...(r.data.settings ?? {}) },
     };
     if (room.status === 'finished' || !room.members.length) continue;
     rooms.set(room.code, room);

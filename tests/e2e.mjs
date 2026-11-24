@@ -86,11 +86,41 @@ assert((await send(clients[0].socket, 'create_room')).ok, 'create');
 const code = clients[0].room.code;
 for (const c of clients.slice(1)) assert((await send(c.socket, 'join_room', { code })).ok, 'join');
 assert(!(await send(clients[1].socket, 'start_game')).ok, 'non-host cannot start');
+// turn-timer settings: host only, validated values, visible to everyone
+assert(!(await send(clients[1].socket, 'set_settings', { turnSeconds: 15 })).ok, 'non-host cannot change settings');
+assert(!(await send(clients[0].socket, 'set_settings', { turnSeconds: 7 })).ok, 'invalid turn time rejected');
+assert((await send(clients[0].socket, 'set_settings', { turnSeconds: 15 })).ok, 'host sets 15s timer');
+await new Promise((r) => setTimeout(r, 100));
+assert(clients.every((c) => c.room.settings.turnSeconds === 15), 'settings broadcast to all');
 assert((await send(clients[0].socket, 'start_game')).ok, 'start');
 await new Promise((r) => setTimeout(r, 100));
 
+// the clock runs for the player to move, and survives unrelated updates (no reset exploits)
+{
+  const v = clients[0].room.game;
+  const actor = clients.find((x) => x.id === v.turn);
+  const spectator = clients.find((x) => x.id !== v.turn);
+  const t1 = actor.room.timer;
+  assert(t1 && t1.deadline - t1.now > 13000 && t1.deadline - t1.now <= 15000, 'timer armed for ~15s');
+  spectator.socket.disconnect();
+  await new Promise((r) => setTimeout(r, 150));
+  spectator.socket.connect();
+  await new Promise((r) => spectator.socket.once('connect', r));
+  assert((await send(spectator.socket, 'auth', { token: spectator.token })).ok, 'spectator reauth');
+  await new Promise((r) => setTimeout(r, 150));
+  assert(actor.room.timer.deadline === t1.deadline, 'deadline unchanged by unrelated updates');
+
+  // nobody acts: the server must move for the actor when time is up
+  const handBefore = actor.room.game.hand.length;
+  const waitUntil = Date.now() + 18000;
+  while (Date.now() < waitUntil && clients[0].room.game.turn === actor.id) await new Promise((r) => setTimeout(r, 200));
+  assert(clients[0].room.game.turn !== actor.id, 'turn passed on timeout');
+  assert(actor.room.game.hand.length === handBefore + 1, 'timed-out player drew a card');
+  console.log('timer: auto-move on timeout ok');
+}
+
 for (const c of clients) {
-  assert(c.room.game.hand.length === 7, 'own hand dealt');
+  assert(c.room.game.hand.length >= 7, 'own hand dealt');
   assert(!JSON.stringify(c.room.game.players).includes('"hand"'), 'hands leaked in player list');
 }
 

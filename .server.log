@@ -1,3 +1,0 @@
-[db] DATABASE_URL not set: running in-memory (nothing persists)
-[auth] admin "admin" created
-UNO server on http://localhost:3001
