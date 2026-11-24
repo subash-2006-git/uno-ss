@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { updateSettings, useSettings } from '../settings.js';
 import { play } from '../sound.js';
 import { useLatency } from '../hooks.js';
+import Icon from './Icon.jsx';
 
 const PRESETS = [
   { id: 'high', name: 'High', desc: 'All animations, glow and confetti' },
@@ -68,7 +69,7 @@ export default function SettingsButton({ className = 'ghost' }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button className={className} onClick={() => setOpen(true)} aria-label="Settings" title="Settings">⚙ <span className="hide-sm">Settings</span></button>
+      <button className={`${className} iconbtn`} onClick={() => setOpen(true)} aria-label="Settings" title="Settings"><Icon name="sliders" /> <span className="hide-sm">Settings</span></button>
       {open && <SettingsPanel onClose={() => setOpen(false)} />}
     </>
   );

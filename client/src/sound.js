@@ -44,6 +44,7 @@ const SOUNDS = {
   uno: (c, v) => [523, 659, 784].forEach((f, i) => tone(c, v, f, 0.12, { type: 'square', at: i * 0.08, gain: 0.14 })),
   win: (c, v) => [523, 659, 784, 1047].forEach((f, i) => tone(c, v, f, 0.2, { type: 'triangle', at: i * 0.12 })),
   end: (c, v) => [440, 349, 262].forEach((f, i) => tone(c, v, f, 0.2, { type: 'triangle', at: i * 0.12, gain: 0.18 })),
+  pop: (c, v) => tone(c, v, 760, 0.07, { type: 'sine', to: 1100, gain: 0.14 }),
   error: (c, v) => tone(c, v, 160, 0.18, { type: 'sawtooth', gain: 0.15 }),
 };
 

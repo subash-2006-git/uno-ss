@@ -5,14 +5,22 @@ import { play } from './sound.js';
 import Auth from './pages/Auth.jsx';
 import Home from './pages/Home.jsx';
 import Admin from './pages/Admin.jsx';
+import Stats from './pages/Stats.jsx';
 import Lobby from './pages/Lobby.jsx';
 import Game from './pages/Game.jsx';
 
 export default function App() {
   const [session, setSession] = useState(loadSession); // { token, user: { id, username, isAdmin } }
   const [room, setRoom] = useState(null);
-  const [view, setView] = useState('home'); // home | admin
+  const [view, setView] = useState('home'); // home | admin | stats
+  const [chat, setChat] = useState([]);       // text messages for the current room
+  const [emotes, setEmotes] = useState([]);   // reaction bubbles currently floating
+  const [chatOpen, setChatOpenState] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const chatOpenRef = useRef(false);
+  const setChatOpen = (open) => { chatOpenRef.current = open; setChatOpenState(open); if (open) setUnread(0); };
   const [online, setOnline] = useState(false);
+  const [replaced, setReplaced] = useState(false); // this account was opened in another tab/device
   const [toast, setToast] = useState('');
   const toastTimer = useRef();
   const sessionRef = useRef(session);
@@ -40,21 +48,44 @@ export default function App() {
       const res = await send('auth', { token: s.token });
       if (!res.ok) dropSession();
     };
-    const onConnect = () => { setOnline(true); authenticate(); };
-    const onDisconnect = () => setOnline(false);
+    const onConnect = () => { setOnline(true); setReplaced(false); authenticate(); };
+    // 'io server disconnect' = the server closed us on purpose (same account signed in somewhere else).
+    const onDisconnect = (reason) => { setOnline(false); if (reason === 'io server disconnect') setReplaced(true); };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     const onKicked = ({ message }) => { setRoom(null); notify(message || 'You were removed from the game'); };
+    const onHistory = (list) => setChat(Array.isArray(list) ? list : []);
+    const onMsg = (m) => {
+      const mine = m.pid === sessionRef.current?.user.id;
+      if (m.kind === 'text') {
+        setChat((c) => [...c.slice(-59), m]);
+        if (!mine) { play('pop'); if (!chatOpenRef.current) setUnread((u) => u + 1); }
+      } else {
+        setEmotes((e) => [...e.filter((x) => x.pid !== m.pid), { key: m.id, pid: m.pid, emote: m.emote }]); // one bubble per sender
+        if (!mine) play('pop');
+        setTimeout(() => setEmotes((e) => e.filter((x) => x.key !== m.id)), 2800);
+      }
+    };
     socket.on('room_update', setRoom);
     socket.on('kicked', onKicked);
+    socket.on('chat_history', onHistory);
+    socket.on('chat_msg', onMsg);
     socket.connect();
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('room_update', setRoom);
       socket.off('kicked', onKicked);
+      socket.off('chat_history', onHistory);
+      socket.off('chat_msg', onMsg);
     };
   }, [dropSession, notify]);
+
+  // Leaving a room (or being removed) clears its chat.
+  useEffect(() => {
+    if (room) return;
+    setChat([]); setUnread(0); setChatOpenState(false); chatOpenRef.current = false;
+  }, [room]);
 
   // After a successful HTTP login: remember the session and sign the socket in.
   const onLoggedIn = async ({ token, user }) => {
@@ -75,17 +106,26 @@ export default function App() {
 
   const leave = async () => { await act('leave_room'); setRoom(null); };
 
+  const chatApi = { chat, unread, open: chatOpen, setOpen: setChatOpen, meId: session?.user.id };
+
   let page;
   if (!session) page = <Auth onLoggedIn={onLoggedIn} />;
   else if (room && (room.status === 'playing' || (room.status === 'finished' && room.game))) {
-    page = <Game room={room} me={session.user.id} act={act} leave={leave} />;
-  } else if (room) page = <Lobby room={room} me={session.user.id} act={act} leave={leave} />;
+    page = <Game room={room} me={session.user.id} act={act} leave={leave} chatApi={chatApi} emotes={emotes} />;
+  } else if (room) page = <Lobby room={room} me={session.user.id} act={act} leave={leave} chatApi={chatApi} emotes={emotes} />;
   else if (view === 'admin') page = <Admin token={session.token} onBack={() => setView('home')} notify={notify} />;
-  else page = <Home user={session.user} act={act} logout={logout} openAdmin={() => setView('admin')} />;
+  else if (view === 'stats') page = <Stats token={session.token} onBack={() => setView('home')} notify={notify} />;
+  else page = <Home user={session.user} act={act} logout={logout} notify={notify} openAdmin={() => setView('admin')} openStats={() => setView('stats')} />;
 
   return (
     <div className="app">
-      {!online && <div className="banner">Reconnecting to server…</div>}
+      {replaced && (
+        <div className="banner">
+          This account is open in another tab or device.
+          <button onClick={() => { setReplaced(false); socket.connect(); }}>Use this tab</button>
+        </div>
+      )}
+      {!online && !replaced && <div className="banner">Reconnecting to server…</div>}
       {page}
       {toast && <div className="toast">{toast}</div>}
     </div>

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { api } from '../api.js';
 import SettingsButton from '../components/SettingsModal.jsx';
+import Logo from '../components/Logo.jsx';
+import FloatingCards from '../components/FloatingCards.jsx';
 
 export default function Auth({ onLoggedIn }) {
   const [mode, setMode] = useState('login'); // login | signup
@@ -28,9 +30,10 @@ export default function Auth({ onLoggedIn }) {
   };
 
   return (
-    <main className="home">
+    <main className="home page">
+      <FloatingCards />
       <div className="whoami right"><SettingsButton /></div>
-      <h1 className="logo">UNO<span>-HUH</span></h1>
+      <Logo />
       <p className="sub">2-16 players · every player for themselves · first to 500</p>
 
       <form className="panel" onSubmit={submit}>

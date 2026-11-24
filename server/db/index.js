@@ -99,7 +99,10 @@ export const saveRoom = safe('saveRoom', (room) =>
     `INSERT INTO rooms (code, host_id, status, data, updated_at) VALUES ($1,$2,$3,$4,now())
      ON CONFLICT (code) DO UPDATE SET host_id=$2, status=$3, data=$4, updated_at=now()`,
     [room.code, room.hostId, room.status,
-      JSON.stringify({ members: room.members, game: room.game, settings: room.settings })]));
+      JSON.stringify({
+        members: room.members, game: room.game, settings: room.settings,
+        spectators: room.spectators, waiting: room.waiting,
+      })]));
 
 export const deleteRoom = safe('deleteRoom', (code) =>
   pool.query('DELETE FROM rooms WHERE code = $1', [code]));
@@ -108,25 +111,97 @@ export const loadRooms = safe('loadRooms', async () =>
   (await pool.query(
     `SELECT code, host_id, status, data FROM rooms WHERE updated_at > now() - interval '1 day'`)).rows);
 
-export const recordMatch = safe('recordMatch', async (code, game) => {
-  const m = await pool.query(
-    'INSERT INTO matches (room_code, winner_id, rounds) VALUES ($1,$2,$3) RETURNING id',
-    [code, game.winnerId, game.round]);
-  const id = m.rows[0].id;
-  for (const p of game.players) {
-    await pool.query(
-      'INSERT INTO match_scores (match_id, player_id, name, score) VALUES ($1,$2,$3,$4)',
-      [id, p.id, p.name, p.score]);
-  }
-});
+/* ---------- match history & stats (Postgres, or in-memory without DATABASE_URL) ---------- */
 
-export const leaderboard = safe('leaderboard', async () =>
-  (await pool.query(
-    `SELECT s.player_id AS id,
-            (array_agg(s.name ORDER BY m.finished_at DESC))[1] AS name,
-            COUNT(*)::int AS played,
-            COUNT(*) FILTER (WHERE m.winner_id = s.player_id)::int AS wins
-       FROM match_scores s JOIN matches m ON m.id = s.match_id
-      GROUP BY s.player_id
-      ORDER BY wins DESC, played ASC
-      LIMIT 10`)).rows);
+mem.matches = [];
+
+// Final standings: the match winner first, then by score.
+function standings(game) {
+  return [...game.players]
+    .sort((a, b) => (b.id === game.winnerId) - (a.id === game.winnerId) || b.score - a.score)
+    .map((p, i) => ({ playerId: p.id, name: p.name, score: p.score, roundsWon: p.roundsWon ?? 0, placing: i + 1 }));
+}
+
+export async function recordMatch(code, game) {
+  const rows = standings(game);
+  if (!pool) {
+    mem.matches.push({ id: mem.matches.length + 1, roomCode: code, winnerId: game.winnerId, rounds: game.round, finishedAt: new Date(), scores: rows });
+    return;
+  }
+  try {
+    const m = await pool.query(
+      'INSERT INTO matches (room_code, winner_id, rounds) VALUES ($1,$2,$3) RETURNING id',
+      [code, game.winnerId, game.round]);
+    const id = m.rows[0].id;
+    for (const r of rows) {
+      await pool.query(
+        'INSERT INTO match_scores (match_id, player_id, name, score, rounds_won, placing) VALUES ($1,$2,$3,$4,$5,$6)',
+        [id, r.playerId, r.name, r.score, r.roundsWon, r.placing]);
+    }
+  } catch (e) { console.error('[db] recordMatch:', e.message); }
+}
+
+export async function leaderboard() {
+  if (!pool) {
+    const agg = new Map();
+    for (const m of mem.matches) for (const s of m.scores) {
+      const a = agg.get(s.playerId) ?? { id: s.playerId, name: s.name, played: 0, wins: 0 };
+      a.name = s.name; a.played++; if (m.winnerId === s.playerId) a.wins++;
+      agg.set(s.playerId, a);
+    }
+    return [...agg.values()].sort((a, b) => b.wins - a.wins || a.played - b.played).slice(0, 10);
+  }
+  try {
+    return (await pool.query(
+      `SELECT s.player_id AS id,
+              (array_agg(s.name ORDER BY m.finished_at DESC))[1] AS name,
+              COUNT(*)::int AS played,
+              COUNT(*) FILTER (WHERE m.winner_id = s.player_id)::int AS wins
+         FROM match_scores s JOIN matches m ON m.id = s.match_id
+        GROUP BY s.player_id
+        ORDER BY wins DESC, played ASC
+        LIMIT 10`)).rows;
+  } catch (e) { console.error('[db] leaderboard:', e.message); return []; }
+}
+
+// Everything the stats page needs for one player.
+export async function userStats(userId) {
+  let recent;
+  if (!pool) {
+    recent = mem.matches
+      .filter((m) => m.scores.some((s) => s.playerId === userId))
+      .sort((a, b) => b.finishedAt - a.finishedAt || b.id - a.id)
+      .map((m) => {
+        const s = m.scores.find((x) => x.playerId === userId);
+        return { id: m.id, roomCode: m.roomCode, finishedAt: m.finishedAt, rounds: m.rounds, score: s.score, roundsWon: s.roundsWon,
+          placing: s.placing, players: m.scores.length, winner: m.scores.find((x) => x.playerId === m.winnerId)?.name ?? null,
+          won: m.winnerId === userId };
+      });
+  } else {
+    try {
+      recent = (await pool.query(
+        `SELECT m.id, m.room_code AS "roomCode", m.finished_at AS "finishedAt", m.rounds,
+                s.score, s.rounds_won AS "roundsWon", s.placing,
+                (SELECT COUNT(*) FROM match_scores x WHERE x.match_id = m.id)::int AS players,
+                (SELECT x.name FROM match_scores x WHERE x.match_id = m.id AND x.player_id = m.winner_id) AS winner,
+                (m.winner_id = s.player_id) AS won
+           FROM match_scores s JOIN matches m ON m.id = s.match_id
+          WHERE s.player_id = $1 ORDER BY m.finished_at DESC LIMIT 200`, [userId])).rows;
+    } catch (e) { console.error('[db] userStats:', e.message); recent = []; }
+  }
+  const played = recent.length;
+  const wins = recent.filter((r) => r.won).length;
+  let streak = 0;
+  for (const r of recent) { if (r.won) streak++; else break; } // current win streak (newest first)
+  return {
+    summary: {
+      played, wins,
+      winRate: played ? Math.round((wins / played) * 100) : 0,
+      avgScore: played ? Math.round(recent.reduce((a, r) => a + r.score, 0) / played) : 0,
+      bestScore: played ? Math.max(...recent.map((r) => r.score)) : 0,
+      roundsWon: recent.reduce((a, r) => a + (r.roundsWon ?? 0), 0),
+      streak,
+    },
+    recent: recent.slice(0, 15),
+  };
+}

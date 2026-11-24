@@ -39,3 +39,8 @@ CREATE TABLE IF NOT EXISTS match_scores (
   score     INT NOT NULL,
   PRIMARY KEY (match_id, player_id)
 );
+
+-- v2: richer history for the stats page (safe to re-run on existing databases)
+ALTER TABLE match_scores ADD COLUMN IF NOT EXISTS rounds_won INT NOT NULL DEFAULT 0;
+ALTER TABLE match_scores ADD COLUMN IF NOT EXISTS placing INT;
+CREATE INDEX IF NOT EXISTS match_scores_player_idx ON match_scores (player_id);

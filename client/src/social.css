@@ -1,0 +1,146 @@
+/* =====================================================================
+   Spectators, chat & reactions, stats, flights/bursts and extra motion.
+   Entrance motion works on High + Balanced; looping/heavy effects are High only;
+   Data saver kills all animation globally (see responsive.css) and never renders the JS-driven layers.
+   ===================================================================== */
+
+/* ---------- spectators / late joiners ---------- */
+.watchers { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); color: var(--accent); }
+.watchbanner { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 6px 14px; border-radius: 99px; align-self: center;
+  background: rgba(255, 194, 51, .12); border: 1px solid rgba(255, 194, 51, .35); color: var(--accent); font-family: var(--font-head); font-size: 14px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; margin: 2px 4px 2px 0; border-radius: 99px; font-size: 13px;
+  background: rgba(255, 255, 255, .1); border: 1px solid var(--line); }
+.chip.joining { margin: 0; background: rgba(47, 164, 79, .22); border-color: rgba(120, 220, 150, .4); color: #b6f0cc; }
+.watchers-list h4 { display: flex; align-items: center; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.watchers-list p { margin: 0; }
+.me.spectate { flex-direction: row; justify-content: center; align-items: center; gap: 10px; padding: 12px; min-height: 64px; }
+
+/* ---------- chat drawer + reactions ---------- */
+.chatbtn, .emotepop > button { position: relative; padding: 6px 10px; }
+.badge-dot { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px; display: grid; place-items: center;
+  background: var(--red); color: #fff; border-radius: 99px; font-size: 11px; font-weight: 700; }
+.emotepop { position: relative; display: inline-flex; }
+.popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 56; padding: 8px; border-radius: 14px;
+  background: rgba(8, 30, 20, .97); border: 1px solid var(--line); box-shadow: 0 14px 30px rgba(0, 0, 0, .5); width: max-content; max-width: 90vw; }
+.emotebar { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.emote { width: 44px; height: 44px; min-height: 44px; padding: 0; font-size: 24px; line-height: 1; border-radius: 12px; background: rgba(255, 255, 255, .08); }
+.emote:hover:not(:disabled) { transform: translateY(-3px) scale(1.12); }
+
+.chat-drawer { position: fixed; z-index: 55; right: 12px; bottom: 12px; top: 64px; width: min(340px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-radius: 18px; background: rgba(8, 30, 20, .97); border: 1px solid var(--line); box-shadow: 0 20px 50px rgba(0, 0, 0, .55); }
+.chat-drawer header { display: flex; justify-content: space-between; align-items: center; }
+.chat-drawer h3 { margin: 0; }
+.chat-drawer header button { min-height: 36px; padding: 4px 8px; }
+.msgs { list-style: none; margin: 0; padding: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; overscroll-behavior: contain; }
+.msgs li { display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: 12px; background: rgba(255, 255, 255, .06); max-width: 92%; align-self: flex-start; word-break: break-word; }
+.msgs li.mine { align-self: flex-end; background: rgba(255, 194, 51, .14); }
+.msgs li.empty { align-self: center; background: none; color: var(--muted); }
+.msgs .who { font-family: var(--font-head); font-size: 12px; font-weight: 600; }
+.msgs .who em { font-style: normal; color: var(--muted); font-weight: 400; }
+.msgs .txt { font-size: 14px; }
+.chat-drawer form { display: flex; gap: 6px; }
+.chat-drawer form input { flex: 1; min-width: 0; }
+.chat-drawer form button { min-width: 44px; }
+
+.emote-layer { position: fixed; inset: 0; pointer-events: none; z-index: 48; overflow: hidden; }
+.chat-drawer .emotebar { display: grid; grid-template-columns: repeat(4, 1fr); }
+.chat-drawer .emote { width: 100%; }
+.emote-bubble { position: absolute; transform: translate(-50%, -50%); font-size: 40px; line-height: 1; padding: 6px 10px; border-radius: 20px;
+  background: rgba(8, 30, 20, .88); border: 1px solid var(--line); animation: emoteFloat 2.7s ease-out forwards; }
+
+/* ---------- JS-driven effect layers ---------- */
+.flight-layer, .burst-layer { position: fixed; inset: 0; pointer-events: none; }
+.flight-layer { z-index: 45; }
+.flight { position: fixed; left: 0; top: 0; will-change: transform; }
+.flight .card { width: 100%; height: 100%; box-shadow: 0 14px 28px rgba(0, 0, 0, .5); }
+.flight .card .center { font-size: 40px; }
+.burst-layer { z-index: 50; display: grid; place-items: center; align-content: center; gap: 6px; }
+.burst { display: grid; justify-items: center; text-align: center; font-family: var(--font-head); color: #fff; --bc: #fff;
+  animation: burstIn 1.15s cubic-bezier(.2, .9, .3, 1.2) forwards; }
+.burst b { font-size: clamp(44px, 11vw, 92px); line-height: 1; text-shadow: 0 5px 0 rgba(0, 0, 0, .35), 0 0 30px var(--bc); color: var(--bc); }
+.burst small { font-size: clamp(14px, 3vw, 20px); background: rgba(0, 0, 0, .45); padding: 2px 12px; border-radius: 99px; }
+.burst.skip { --bc: #ff6b5e; } .burst.reverse { --bc: #6cb0ff; } .burst.draw2 { --bc: #ffd75e; }
+.burst.wild4 { --bc: #d9a7ff; } .burst.wild { --bc: #8bd450; } .burst.uno { --bc: #ff5148; }
+.burst.uno b { color: #fff; background: radial-gradient(circle at 30% 25%, #ff7a6e, #d4141a 72%); padding: 4px 28px; border-radius: 999px; border: 4px solid #fff; text-shadow: 0 3px 0 rgba(0, 0, 0, .3); }
+.game.shake { animation: shake .46s cubic-bezier(.36, .07, .19, .97); }
+
+/* ---------- stats page ---------- */
+.statsgrid { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
+.ring { position: relative; width: 132px; height: 132px; }
+.ring-bg { fill: none; stroke: rgba(255, 255, 255, .1); stroke-width: 9; }
+.ring-fg { fill: none; stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dasharray 1.1s cubic-bezier(.2, .8, .2, 1); }
+.ring-text { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.ring-text b { font-family: var(--font-head); font-size: 30px; line-height: 1; }
+.ring-text span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tile-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, .28); border: 1px solid var(--line);
+  animation: riseIn .5s ease-out calc(var(--i) * .07s) backwards; }
+.tile-stat b { font-family: var(--font-head); font-size: 24px; line-height: 1.1; }
+.tile-stat span { font-size: 12px; color: var(--muted); }
+.tile-stat.gold b { color: var(--accent); }
+.history { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.history li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(0, 0, 0, .28);
+  animation: riseIn .45s ease-out calc(var(--i) * .05s) backwards; }
+.history .hmain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.history small { color: var(--muted); font-size: 12px; }
+.history .hscore { font-family: var(--font-head); font-size: 20px; text-align: right; }
+.history .hscore small { margin-left: 3px; }
+.place { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; font-family: var(--font-head); font-weight: 700;
+  background: rgba(255, 255, 255, .1); border: 2px solid rgba(255, 255, 255, .25); }
+.place.p1 { background: linear-gradient(180deg, #ffd75e, #f5a300); color: #2b1d00; border-color: #fff3c4; }
+.place.p2 { background: linear-gradient(180deg, #e8eef2, #aeb9c2); color: #1d262c; border-color: #fff; }
+.place.p3 { background: linear-gradient(180deg, #e3a672, #b4743f); color: #2d1a09; border-color: #f3d0b0; }
+.emptystate { display: grid; justify-items: center; text-align: center; gap: 6px; color: var(--accent); }
+.emptystate h3, .emptystate p { margin: 0; }
+.skeleton { display: grid; gap: 10px; }
+.skeleton i { display: block; height: 46px; border-radius: 12px; background: linear-gradient(90deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .14), rgba(255, 255, 255, .05)); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+
+/* ---------- leaderboard polish ---------- */
+.board li { align-items: center; gap: 10px; animation: riseIn .45s ease-out calc(var(--i) * .05s) backwards; }
+.board .rank { flex: none; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; font-family: var(--font-head); font-size: 13px; background: rgba(255, 255, 255, .1); }
+.board .bname { flex: 1; font-weight: 700; }
+.board .bstat { color: var(--muted); font-size: 13px; }
+.board li.r1 .rank { background: linear-gradient(180deg, #ffd75e, #f5a300); color: #2b1d00; }
+.board li.r2 .rank { background: linear-gradient(180deg, #e8eef2, #aeb9c2); color: #1d262c; }
+.board li.r3 .rank { background: linear-gradient(180deg, #e3a672, #b4743f); color: #2d1a09; }
+
+/* ---------- extra micro-motion (entrances: High + Balanced) ---------- */
+.members li { animation: slideIn .35s ease-out calc(var(--i, 0) * .06s) backwards; }
+.ominifan b.bump { display: inline-block; animation: bump .4s ease-out; }
+.bar i { animation: growX .9s cubic-bezier(.2, .8, .2, 1) backwards; }
+.scoreboard li { animation: riseIn .4s ease-out backwards; }
+.msgs li { animation: riseIn .22s ease-out; }
+.chat-drawer, .popover { animation: drawerIn .22s ease-out; }
+.watchbanner { animation: riseIn .4s ease-out; }
+
+@keyframes slideIn { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@keyframes riseIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes drawerIn { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.7); color: var(--accent); } 100% { transform: scale(1); } }
+@keyframes growX { from { width: 0; } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes emoteFloat { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.2); } 14% { opacity: 1; transform: translate(-50%, -62%) scale(1.25); }
+  26% { transform: translate(-50%, -62%) scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -50%) translateY(-60px) scale(1); } }
+@keyframes burstIn { 0% { opacity: 0; transform: scale(.3) rotate(-9deg); } 22% { opacity: 1; transform: scale(1.18) rotate(2deg); }
+  62% { opacity: 1; transform: scale(1) rotate(0); } 100% { opacity: 0; transform: scale(1.35) translateY(-34px); } }
+@keyframes shake { 10%, 90% { transform: translateX(-2px); } 20%, 80% { transform: translateX(4px); } 30%, 50%, 70% { transform: translateX(-7px); } 40%, 60% { transform: translateX(7px); } }
+
+/* Balanced: keep it simple */
+html[data-gfx='medium'] .game.shake { animation: none; }
+html[data-gfx='medium'] .tile-stat, html[data-gfx='medium'] .history li, html[data-gfx='medium'] .board li { animation-duration: .25s; }
+/* Data saver: no bubbles floating (they still appear, briefly), no skeleton shimmer */
+html[data-gfx='low'] .emote-bubble { transform: translate(-50%, -110%); opacity: 1; }
+html[data-gfx='low'] .chat-drawer, html[data-gfx='low'] .popover { background: #0f2c1f; box-shadow: none; }
+
+@media (max-width: 700px) {
+  .statsgrid { grid-template-columns: 1fr; justify-items: center; }
+  .tiles { width: 100%; }
+  .chat-drawer { left: 8px; right: 8px; width: auto; top: auto; height: 62dvh; bottom: max(8px, env(safe-area-inset-bottom)); }
+  .popover { right: -40px; }
+  .emote-bubble { font-size: 34px; }
+  .watchers { margin-left: 4px; padding-left: 4px; }
+}
+@media (max-height: 520px) and (orientation: landscape) {
+  .chat-drawer { top: 8px; bottom: 8px; left: auto; right: 8px; width: 300px; height: auto; }
+  .watchbanner { display: none; }
+}

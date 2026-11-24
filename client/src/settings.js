@@ -33,7 +33,20 @@ function load() {
 
 let state = load();
 const listeners = new Set();
-const apply = () => { try { document.documentElement.dataset.gfx = state.gfx; } catch { /* ignore */ } };
+// Fonts are self-hosted and fetched lazily, and never on Data saver (system rounded fonts are used instead).
+let fontsRequested = false;
+function ensureFonts() {
+  if (fontsRequested || state.gfx === 'low') return;
+  fontsRequested = true;
+  Promise.all([
+    import('@fontsource/fredoka/600.css'), import('@fontsource/fredoka/700.css'),
+    import('@fontsource/nunito/400.css'), import('@fontsource/nunito/700.css'),
+  ]).then(() => document.documentElement.classList.add('fonts-ready')).catch(() => { fontsRequested = false; });
+}
+const apply = () => {
+  try { document.documentElement.dataset.gfx = state.gfx; } catch { /* ignore */ }
+  ensureFonts();
+};
 apply();
 
 export const getSettings = () => state;

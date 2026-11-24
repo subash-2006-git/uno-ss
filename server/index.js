@@ -32,7 +32,7 @@ const rooms = new Map();   // code -> room
 function playerFor(user) {
   let p = players.get(user.id);
   if (!p) {
-    const room = [...rooms.values()].find((r) => r.members.some((m) => m.id === user.id));
+    const room = [...rooms.values()].find((r) => isMember(r, user.id) || isSpectator(r, user.id));
     p = { id: user.id, name: user.username, socketId: null, roomCode: room?.code ?? null };
     players.set(user.id, p);
   }
@@ -49,26 +49,45 @@ function makeCode() {
 }
 
 const isConnected = (id) => Boolean(players.get(id)?.socketId);
+const isMember = (room, id) => room.members.some((m) => m.id === id);
+const isSpectator = (room, id) => room.spectators.some((m) => m.id === id);
+const everyone = (room) => [...room.members, ...room.spectators];
+const MAX_SPECTATORS = 40;
+const SPECTATOR_GRACE_MS = 120000; // a disconnected spectator is removed after this long
+const CHAT_KEEP = 40;              // messages replayed to someone joining mid-conversation
 
 function roomView(room, pid) {
   return {
     code: room.code,
     hostId: room.hostId,
     status: room.status,
+    role: isMember(room, pid) ? 'player' : 'spectator',
     members: room.members.map((m) => ({ id: m.id, name: m.name, connected: isConnected(m.id) })),
-    game: room.game ? U.viewFor(room.game, pid) : null,
+    spectators: room.spectators.map((m) => ({ id: m.id, name: m.name, connected: isConnected(m.id), waiting: room.waiting.includes(m.id) })),
+    waiting: room.waiting,
+    seatsFree: Math.max(0, U.MAX_PLAYERS - room.members.length - room.waiting.length),
+    game: room.game ? U.viewFor(room.game, pid) : null, // spectators get an empty hand: they only see public info
     settings: room.settings,
     timer: room.deadline ? { deadline: room.deadline, now: Date.now() } : null, // `now` lets clients correct clock skew
     limits: { min: U.MIN_PLAYERS, max: U.MAX_PLAYERS, target: U.WINNING_SCORE },
   };
 }
 
+function emitRoom(room, event, payload) {
+  for (const m of everyone(room)) {
+    const sid = players.get(m.id)?.socketId;
+    if (sid) io.to(sid).emit(event, payload);
+  }
+}
+
 function broadcast(room) {
-  for (const m of room.members) {
+  for (const m of everyone(room)) {
     const sid = players.get(m.id)?.socketId;
     if (sid) io.to(sid).emit('room_update', roomView(room, m.id));
   }
 }
+
+const sendHistory = (room, p) => { if (p.socketId) io.to(p.socketId).emit('chat_history', room.chat); };
 
 // Called after every state change: record finished matches, persist, re-arm the turn clock, push.
 function commit(room) {
@@ -122,6 +141,11 @@ function dropMember(room, id, kickMessage) {
   room.members = room.members.filter((m) => m.id !== id);
   if (room.game && room.status === 'playing') U.removePlayer(room.game, id);
   if (!room.members.length) {
+    for (const s of room.spectators) { // nobody left to watch
+      const sp = players.get(s.id);
+      if (sp?.socketId) io.to(sp.socketId).emit('kicked', { message: 'The game ended because all players left' });
+      if (sp) sp.roomCode = null;
+    }
     clearClock(room);
     rooms.delete(room.code);
     db.deleteRoom(room.code);
@@ -131,6 +155,45 @@ function dropMember(room, id, kickMessage) {
     room.hostId = (room.members.find((m) => isConnected(m.id)) ?? room.members[0]).id;
   }
   commit(room);
+}
+
+function removeSpectator(room, id, kickMessage) {
+  const p = players.get(id);
+  if (kickMessage && p?.socketId) io.to(p.socketId).emit('kicked', { message: kickMessage });
+  if (p && p.roomCode === room.code) p.roomCode = null;
+  room.spectators = room.spectators.filter((s) => s.id !== id);
+  room.waiting = room.waiting.filter((x) => x !== id);
+  commit(room);
+}
+
+const leaveRoom = (room, id, msg) => (isMember(room, id) ? dropMember(room, id, msg) : removeSpectator(room, id, msg));
+
+function scheduleSpectatorPrune(room, id) {
+  setTimeout(() => {
+    const r = rooms.get(room.code);
+    if (r && isSpectator(r, id) && !isConnected(id)) removeSpectator(r, id);
+  }, SPECTATOR_GRACE_MS);
+}
+
+// Spectators who asked for a seat are dealt in at the start of the next round.
+function admitWaiting(room) {
+  const g = room.game;
+  for (const id of [...room.waiting]) {
+    room.waiting = room.waiting.filter((x) => x !== id);
+    const s = room.spectators.find((x) => x.id === id);
+    if (!s || !g || room.members.length >= U.MAX_PLAYERS) continue;
+    if (U.addPlayer(g, s).ok) {
+      room.members.push({ id: s.id, name: s.name });
+      room.spectators = room.spectators.filter((x) => x.id !== id);
+    }
+  }
+}
+
+function newRoom(code, host) {
+  return {
+    code, hostId: host.id, status: 'lobby', members: [{ id: host.id, name: host.name }], spectators: [], waiting: [], chat: [],
+    game: null, timer: null, timerKey: null, deadline: null, missed: {}, settings: { ...DEFAULT_SETTINGS },
+  };
 }
 
 const roomOf = (p) => (p.roomCode ? rooms.get(p.roomCode) : null);
@@ -166,7 +229,7 @@ io.on('connection', (socket) => {
       p.socketId = socket.id;
       ack?.({ ok: true, name: p.name });
       const room = roomOf(p);
-      if (room) { room.missed[p.id] = 0; commit(room); }
+      if (room) { room.missed[p.id] = 0; commit(room); sendHistory(room, p); }
     } catch (e) {
       console.error('auth', e);
       ack?.({ ok: false, error: 'Server error' });
@@ -175,30 +238,75 @@ io.on('connection', (socket) => {
 
   on('create_room', { needRoom: false }, (p) => {
     const old = roomOf(p);
-    if (old) dropMember(old, p.id);
-    const room = {
-      code: makeCode(), hostId: p.id, status: 'lobby', members: [{ id: p.id, name: p.name }],
-      game: null, timer: null, timerKey: null, deadline: null, missed: {}, settings: { ...DEFAULT_SETTINGS },
-    };
+    if (old) leaveRoom(old, p.id);
+    const room = newRoom(makeCode(), p);
     rooms.set(room.code, room);
     p.roomCode = room.code;
     commit(room);
   });
 
+  // Joining a lobby seats you as a player. Joining a game in progress makes you a spectator
+  // (who can then ask for a seat in the next round).
   on('join_room', { needRoom: false }, (p, _r, { code }) => {
     const room = rooms.get(String(code ?? '').toUpperCase().trim());
     if (!room) return { ok: false, error: 'Room not found' };
-    if (room.members.some((m) => m.id === p.id)) { p.roomCode = room.code; commit(room); return; }
-    if (room.status !== 'lobby') return { ok: false, error: 'That game already started' };
-    if (room.members.length >= U.MAX_PLAYERS) return { ok: false, error: `Room is full (${U.MAX_PLAYERS} max)` };
+    if (isMember(room, p.id) || isSpectator(room, p.id)) {
+      p.roomCode = room.code; commit(room); sendHistory(room, p);
+      return { ok: true, role: isMember(room, p.id) ? 'player' : 'spectator' };
+    }
+    const asPlayer = room.status === 'lobby';
+    if (asPlayer && room.members.length >= U.MAX_PLAYERS) return { ok: false, error: `Room is full (${U.MAX_PLAYERS} max)` };
+    if (!asPlayer && room.spectators.length >= MAX_SPECTATORS) return { ok: false, error: 'Too many spectators in that room' };
     const old = roomOf(p);
-    if (old) dropMember(old, p.id);
-    room.members.push({ id: p.id, name: p.name });
+    if (old) leaveRoom(old, p.id);
+    (asPlayer ? room.members : room.spectators).push({ id: p.id, name: p.name });
     p.roomCode = room.code;
+    commit(room);
+    sendHistory(room, p);
+    return { ok: true, role: asPlayer ? 'player' : 'spectator' };
+  });
+
+  on('leave_room', {}, (p, room) => { leaveRoom(room, p.id); });
+
+  // Spectator -> player. In a lobby: sit down now. In a game: queue for the next round.
+  on('request_seat', {}, (p, room) => {
+    if (!isSpectator(room, p.id)) return { ok: false, error: 'You are already playing' };
+    if (room.waiting.includes(p.id)) return { ok: true };
+    if (room.members.length + room.waiting.length >= U.MAX_PLAYERS) return { ok: false, error: 'No free seats' };
+    if (room.status === 'lobby') {
+      room.spectators = room.spectators.filter((s) => s.id !== p.id);
+      room.members.push({ id: p.id, name: p.name });
+    } else room.waiting.push(p.id);
     commit(room);
   });
 
-  on('leave_room', {}, (p, room) => { dropMember(room, p.id); });
+  on('cancel_seat', {}, (p, room) => {
+    room.waiting = room.waiting.filter((x) => x !== p.id);
+    commit(room);
+  });
+
+  const nowMs = () => Date.now();
+  const say = (p, room, kind, extra) => ({
+    id: randomUUID().slice(0, 8), pid: p.id, name: p.name, spectator: !isMember(room, p.id), kind, at: nowMs(), ...extra,
+  });
+
+  on('chat', {}, (p, room, { text }) => {
+    if (nowMs() - (p.lastChat ?? 0) < 700) return { ok: false, error: 'Slow down a little' };
+    const clean = String(text ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!clean) return { ok: false, error: 'Type a message first' };
+    p.lastChat = nowMs();
+    const msg = say(p, room, 'text', { text: clean });
+    room.chat.push(msg);
+    if (room.chat.length > CHAT_KEEP) room.chat.shift();
+    emitRoom(room, 'chat_msg', msg);
+  });
+
+  on('emote', {}, (p, room, { emote }) => {
+    if (!U.EMOTE_IDS.includes(emote)) return { ok: false, error: 'Unknown emote' };
+    if (nowMs() - (p.lastEmote ?? 0) < 1200) return { ok: false, error: 'Slow down a little' };
+    p.lastEmote = nowMs();
+    emitRoom(room, 'chat_msg', say(p, room, 'emote', { emote }));
+  });
 
   on('set_settings', {}, (p, room, { turnSeconds }) => {
     if (room.hostId !== p.id) return { ok: false, error: 'Only the host can change settings' };
@@ -224,6 +332,7 @@ io.on('connection', (socket) => {
   // Game moves share one shape: run the engine function, push on success.
   const move = (event, run) => on(event, {}, (p, room, payload) => {
     if (room.status !== 'playing' || !room.game) return { ok: false, error: 'No game in progress' };
+    if (!isMember(room, p.id)) return { ok: false, error: 'Spectators cannot play' };
     const wasActor = U.actorId(room.game) === p.id;
     const r = run(room.game, p.id, payload);
     if (r.ok) { if (wasActor) room.missed[p.id] = 0; commit(room); }
@@ -236,13 +345,30 @@ io.on('connection', (socket) => {
   move('challenge', (g, id, { accept }) => U.resolveChallenge(g, id, !accept));
   move('call_uno', (g, id) => U.callUno(g, id));
   move('catch_uno', (g, id) => U.catchUno(g, id));
-  move('next_round', (g, id) => U.nextRound(g));
+
+  on('next_round', {}, (p, room) => {
+    if (room.status !== 'playing' || !room.game) return { ok: false, error: 'No game in progress' };
+    if (!isMember(room, p.id)) return { ok: false, error: 'Only players can start the next round' };
+    if (room.game.phase !== 'roundOver') return { ok: false, error: 'Round is not over' };
+    admitWaiting(room); // late joiners are dealt in with everyone else
+    const r = U.nextRound(room.game);
+    if (r.ok) commit(room);
+    return r;
+  });
 
   on('rematch', {}, (p, room) => {
     if (room.hostId !== p.id) return { ok: false, error: 'Only the host can restart' };
     if (room.status !== 'finished') return { ok: false, error: 'Match is not over' };
     room.game = null;
     room.status = 'lobby';
+    for (const id of room.waiting) { // spectators who asked for a seat sit down first
+      const s = room.spectators.find((x) => x.id === id);
+      if (s && room.members.length < U.MAX_PLAYERS) {
+        room.members.push({ id: s.id, name: s.name });
+        room.spectators = room.spectators.filter((x) => x.id !== id);
+      }
+    }
+    room.waiting = [];
     commit(room);
   });
 
@@ -250,7 +376,9 @@ io.on('connection', (socket) => {
     if (!me || me.socketId !== socket.id) return;
     me.socketId = null;
     const room = roomOf(me);
-    if (room) commit(room);
+    if (!room) return;
+    if (isSpectator(room, me.id)) scheduleSpectatorPrune(room, me.id);
+    commit(room);
   });
 });
 
@@ -367,6 +495,11 @@ async function seedAdmin() {
 /* ---------- http ---------- */
 
 app.get('/api/leaderboard', async (_req, res) => res.json((await db.leaderboard()) ?? []));
+app.get('/api/stats/me', wrap(async (req, res) => {
+  const u = await userFromToken(bearer(req));
+  if (!u || u.status !== 'approved') return res.status(401).json({ error: 'Not logged in' });
+  res.json(await db.userStats(u.id));
+}));
 app.get('/api/health', (_req, res) => res.json({ ok: true, db: db.dbEnabled, rooms: rooms.size }));
 
 const dist = path.resolve(import.meta.dirname, '../client/dist');
@@ -384,11 +517,13 @@ async function restore() {
     const room = {
       code: r.code, hostId: r.host_id, status: r.status,
       members: r.data.members ?? [], game: r.data.game ?? null, missed: {},
+      spectators: r.data.spectators ?? [], waiting: r.data.waiting ?? [], chat: [],
       timer: null, timerKey: null, deadline: null,
       settings: { ...DEFAULT_SETTINGS, ...(r.data.settings ?? {}) },
     };
     if (room.status === 'finished' || !room.members.length) continue;
     rooms.set(room.code, room);
+    for (const s of room.spectators) scheduleSpectatorPrune(room, s.id); // nobody is connected right after a restart
     armTimer(room);
   }
   if (rooms.size) console.log(`[db] restored ${rooms.size} room(s)`);

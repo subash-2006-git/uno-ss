@@ -202,6 +202,35 @@ describe('scoring', () => {
   });
 });
 
+describe('late joiners and round wins', () => {
+  it('counts rounds won', () => {
+    const last = c('red', '9');
+    const s = setup([[last], [c('blue', '1')]]);
+    U.playCard(s, 'p0', last.id);
+    expect(s.players[0].roundsWon).toBe(1);
+    expect(s.players[1].roundsWon).toBe(0);
+  });
+  it('seats a late joiner between rounds and deals them in', () => {
+    const last = c('red', '9');
+    const s = setup([[last], [c('blue', '1')]]);
+    expect(U.addPlayer(s, { id: 'late', name: 'Late' }).ok).toBe(false); // mid-round: not allowed
+    U.playCard(s, 'p0', last.id);
+    expect(U.addPlayer(s, { id: 'late', name: 'Late' }).ok).toBe(true);
+    expect(U.addPlayer(s, { id: 'late', name: 'Late' }).ok).toBe(false); // no double seating
+    U.nextRound(s);
+    expect(s.players).toHaveLength(3);
+    expect(s.players.every((p) => p.hand.length === 7)).toBe(true);
+    expect(s.players[2].score).toBe(0);
+  });
+  it('refuses a late joiner mid-round or at a full table', () => {
+    const s = setup([[c('red', '1')], [c('red', '2')]]);
+    expect(U.addPlayer(s, { id: 'x', name: 'X' }).ok).toBe(false);
+    const full = setup(Array.from({ length: 16 }, () => [c('red', '1')]));
+    full.phase = 'roundOver';
+    expect(U.addPlayer(full, { id: 'x', name: 'X' }).ok).toBe(false);
+  });
+});
+
 describe('leaving', () => {
   it('removing a player returns cards and keeps the turn sane', () => {
     const s = setup([[c('red', '1')], [c('red', '2')], [c('red', '3')]]);

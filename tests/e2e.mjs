@@ -119,6 +119,54 @@ await new Promise((r) => setTimeout(r, 100));
   console.log('timer: auto-move on timeout ok');
 }
 
+/* ---- spectators, late joiners, chat ---- */
+const specName = `spec_${run}`;
+assert((await http('/api/signup', { method: 'POST', body: { username: specName, password: pw } })).status === 201, 'spectator signup');
+const specId = (await http('/api/admin/users', { token: admin.token })).users.find((u) => u.username === specName).id;
+assert((await http(`/api/admin/users/${specId}/approve`, { method: 'POST', token: admin.token })).status === 200, 'approve spectator');
+const specLogin = await http('/api/login', { method: 'POST', body: { username: specName, password: pw } });
+const spec = { socket: io(URL, { forceNew: true }), id: specId, token: specLogin.token, room: null, chat: [], history: null };
+await new Promise((r) => spec.socket.on('connect', r));
+spec.socket.on('room_update', (r) => { spec.room = r; });
+spec.socket.on('chat_msg', (m) => spec.chat.push(m));
+spec.socket.on('chat_history', (h) => { spec.history = h; });
+clients.forEach((c) => { c.chat = []; c.socket.on('chat_msg', (m) => c.chat.push(m)); });
+assert((await send(spec.socket, 'auth', { token: spec.token })).ok, 'spectator auth');
+
+const joined = await send(spec.socket, 'join_room', { code });
+assert(joined.ok && joined.role === 'spectator', 'joining a running game makes you a spectator');
+await new Promise((r) => setTimeout(r, 150));
+assert(spec.room.role === 'spectator' && spec.room.game.hand.length === 0, 'spectator sees no hand');
+assert(!JSON.stringify(spec.room).includes('"hand":[{'), 'no hands leaked to spectator');
+assert(clients[0].room.spectators.some((s) => s.id === specId), 'players see the spectator');
+for (const [ev, payload] of [['play_card', { cardId: 1, color: 'red' }], ['draw_card'], ['call_uno'], ['catch_uno'], ['next_round'], ['challenge', { accept: true }], ['start_game'], ['rematch']]) {
+  assert(!(await send(spec.socket, ev, payload)).ok, `spectator cannot ${ev}`);
+}
+
+// chat: delivery to everyone, rate limit, validation, history on reconnect
+assert((await send(spec.socket, 'chat', { text: '  hello   table  ' })).ok, 'spectator can chat');
+assert(!(await send(spec.socket, 'chat', { text: 'again too fast' })).ok, 'chat rate limit');
+assert(!(await send(clients[1].socket, 'chat', { text: '   ' })).ok, 'empty chat rejected');
+assert((await send(clients[1].socket, 'chat', { text: 'x'.repeat(500) })).ok, 'long chat accepted but trimmed');
+assert(!(await send(clients[2].socket, 'emote', { emote: 'rm -rf' })).ok, 'unknown emote rejected');
+assert((await send(clients[2].socket, 'emote', { emote: 'fire' })).ok, 'emote accepted');
+await new Promise((r) => setTimeout(r, 150));
+assert(clients.every((c) => c.chat.some((m) => m.text === 'hello table' && m.spectator)), 'chat reaches all players, whitespace cleaned, spectator tagged');
+assert(clients.every((c) => c.chat.some((m) => m.kind === 'emote' && m.emote === 'fire')), 'emote reaches all players');
+assert(spec.chat.some((m) => m.text?.length === 120), 'long message trimmed to 120');
+spec.socket.disconnect();
+await new Promise((r) => setTimeout(r, 100));
+spec.socket.connect();
+await new Promise((r) => spec.socket.once('connect', r));
+assert((await send(spec.socket, 'auth', { token: spec.token })).ok, 'spectator reauth');
+await new Promise((r) => setTimeout(r, 150));
+assert(spec.room?.role === 'spectator' && spec.history?.some((m) => m.text === 'hello table'), 'spectator keeps place and gets chat history after reconnect');
+
+assert((await send(spec.socket, 'request_seat')).ok, 'spectator asks for a seat');
+await new Promise((r) => setTimeout(r, 100));
+assert(spec.room.waiting.includes(specId) && clients[0].room.waiting.includes(specId), 'seat request visible to everyone');
+console.log('spectators + chat ok');
+
 for (const c of clients) {
   assert(c.room.game.hand.length >= 7, 'own hand dealt');
   assert(!JSON.stringify(c.room.game.players).includes('"hand"'), 'hands leaked in player list');
@@ -153,6 +201,19 @@ for (let step = 0; step < 3000; step++) {
 const end = clients[0].room.game;
 assert(end.phase === 'roundOver' || end.phase === 'matchOver', 'round finished');
 assert(end.roundResult.points > 0, 'points awarded');
+
+// late joiner is dealt in when the next round starts
+if (end.phase === 'roundOver') {
+  assert(!(await send(spec.socket, 'next_round')).ok, 'spectator cannot start the next round');
+  assert((await send(clients[0].socket, 'next_round')).ok, 'player starts next round');
+  await new Promise((r) => setTimeout(r, 200));
+  assert(spec.room.role === 'player' && spec.room.waiting.length === 0, 'late joiner became a player');
+  assert(spec.room.game.players.length === 5 && spec.room.game.hand.length === 7, 'late joiner dealt 7 cards');
+  assert(spec.room.game.players.find((p) => p.id === specId).score === 0, 'late joiner starts at 0');
+  assert(clients[0].room.members.length === 5 && clients[0].room.spectators.length === 0, 'room lists updated');
+  console.log('late joiner seated at next round ok');
+}
+spec.socket.disconnect();
 console.log(`PASS: accounts (signup/approve/reject/reset) + full round, +${end.roundResult.points} pts, reconnect ok`);
 clients.forEach((c) => c.socket.disconnect());
 process.exit(0);

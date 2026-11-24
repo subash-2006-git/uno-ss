@@ -1,0 +1,274 @@
+/* =====================================================================
+   UNO-HUH theme: "card table". Felt green + gold on dark, classic UNO card colours,
+   rounded Fredoka headings. Loaded last so it restyles the base files.
+   Graphics tiers: entrance animations (all but Data saver), loops/glow/3D depth (High only).
+   ===================================================================== */
+:root {
+  --red: #e8312f; --yellow: #f7c600; --green: #2fa44f; --blue: #1f6fe0;
+  --bg: #07140e; --panel: rgba(10, 36, 25, .8); --line: rgba(255, 255, 255, .13);
+  --text: #f3f7f4; --muted: #9db8a8; --accent: #ffc233;
+  --font-head: 'Fredoka', ui-rounded, 'Segoe UI Rounded', 'Segoe UI', system-ui, sans-serif;
+  --font-body: 'Nunito', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+body {
+  font-family: var(--font-body);
+  background: radial-gradient(ellipse 130% 85% at 50% 0%, #17613f 0%, #0b2f21 48%, #06130c 100%) fixed;
+}
+h1, h2, h3, h4 { font-family: var(--font-head); font-weight: 600; letter-spacing: .2px; }
+.muted { color: var(--muted); }
+.app { position: relative; z-index: 1; }
+
+/* ---------- buttons & inputs ---------- */
+button {
+  font-family: var(--font-head); font-weight: 600; letter-spacing: .2px;
+  background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .15);
+  transition: transform .12s, filter .15s, background .15s;
+}
+button:hover:not(:disabled) { background: rgba(255, 255, 255, .17); filter: none; }
+button:active:not(:disabled) { transform: translateY(1px) scale(.98); }
+button.ghost { background: transparent; border-color: var(--line); color: var(--muted); }
+button.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, .08); }
+button.primary {
+  background: linear-gradient(180deg, #ffd75e, #f5a300); color: #2b1d00; border: 0;
+  box-shadow: 0 3px 0 #a86a00;
+}
+button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #ffe07f, #ffb41f); }
+button.primary:active:not(:disabled) { box-shadow: 0 1px 0 #a86a00; transform: translateY(2px); }
+button.primary:disabled { box-shadow: none; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+input { background: rgba(0, 0, 0, .3); border: 1px solid var(--line); }
+input:focus { border-color: var(--accent); }
+.iconbtn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.icon { flex: none; }
+
+.panel, .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; }
+.panel { padding: 20px; }
+.home { position: relative; }
+.page { animation: pageIn .45s ease-out; }
+.page > *:not(.floaters) { position: relative; z-index: 1; }
+
+/* ---------- logo ---------- */
+.logo { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; font-size: inherit;
+  letter-spacing: 0; text-shadow: none; color: inherit; font-family: var(--font-head); }
+.logo .tile {
+  display: grid; place-items: center; width: clamp(38px, 11vw, 56px); height: clamp(52px, 15vw, 76px);
+  font-size: clamp(26px, 8vw, 40px); font-weight: 700; color: #fff; text-shadow: 0 2px 0 rgba(0, 0, 0, .25);
+  border: 3px solid #fff; border-radius: 12px; transform: rotate(var(--r));
+  background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, .32), transparent 55%), var(--c);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, .4);
+  animation: tileDrop .6s cubic-bezier(.3, 1.4, .5, 1) calc(var(--i) * .07s) backwards;
+}
+.tile.red { --c: var(--red); } .tile.yellow { --c: var(--yellow); color: #3a2a00; text-shadow: none; }
+.tile.green { --c: var(--green); } .tile.blue { --c: var(--blue); }
+.tile.gap { margin-left: 14px; }
+.sub { font-weight: 600; }
+
+/* ---------- cards ---------- */
+.card {
+  background: radial-gradient(circle at 28% 18%, rgba(255, 255, 255, .34), transparent 52%), var(--c, #333);
+  border-radius: 11px; overflow: hidden; font-family: var(--font-head);
+}
+.card.wild { background: #16161a; }
+.card .oval { position: absolute; left: 50%; top: 50%; width: 76%; height: 60%; background: #fff; border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-30deg); }
+.card.wild .oval { background: conic-gradient(var(--red) 0 25%, var(--blue) 0 50%, var(--green) 0 75%, var(--yellow) 0); }
+.card .center { color: var(--c); text-shadow: none; z-index: 1; font-weight: 700; }
+.card.wild .center { color: #fff; background: none; margin: 0; border-radius: 0; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .55)); }
+.card .corner { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .5); z-index: 1; display: flex; font-weight: 700; }
+.card .center .icon, .card .corner .icon { width: 1em; height: 1em; }
+.card.yellow .center { color: #c99a00; }
+.card.back { background: #151515; }
+.card.back span { background: var(--red); color: var(--yellow); border-radius: 50%; padding: 9px 5px; font-size: 15px;
+  letter-spacing: .5px; transform: rotate(-24deg); box-shadow: 0 0 0 2px #fff inset; }
+.card.small span { font-size: 6px; padding: 3px 2px; box-shadow: none; }
+
+/* the discard pile: last card thrown on top, previous one peeking out beneath */
+.discard { position: relative; width: 74px; height: 110px; }
+.discard .under, .discard .topcard { position: absolute; inset: 0; }
+.discard .under { transform: rotate(calc(var(--tilt, 0deg) * -1.6)) translate(-7px, 3px); filter: brightness(.62); }
+.discard .topcard { transform: rotate(var(--tilt, 0deg)); animation: throwIn .42s cubic-bezier(.2, .9, .3, 1.15); }
+@media (min-width: 701px) {
+  .piles .card, .discard { width: 90px; height: 135px; }
+  .piles .card .center { font-size: 50px; }
+  .piles .card.back span { font-size: 18px; padding: 11px 6px; }
+}
+
+/* ---------- table, piles, direction ring ---------- */
+.table { position: relative; }
+.stage { position: relative; display: grid; place-items: center; padding: 30px 46px; }
+.stage::before { content: ''; position: absolute; inset: -14px; border-radius: 50%; pointer-events: none; opacity: .5;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cur, #fff) 60%, transparent), transparent 72%); }
+.dirring { position: absolute; inset: 0; border: 3px dashed rgba(255, 255, 255, .22); border-radius: 50%; pointer-events: none; }
+.dirring::after { position: absolute; top: -13px; left: 50%; margin-left: -13px; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; background: #0b2f21; border: 1px solid var(--line); color: var(--accent); font-size: 16px; line-height: 1; }
+.dirring[data-dir='1']::after { content: '\21BB'; }
+.dirring[data-dir='-1']::after { content: '\21BA'; }
+.drawpile { border: 0; }
+.drawpile:disabled { opacity: 1; }
+.colorchip { background: var(--c); border: 2px solid rgba(255, 255, 255, .8); padding: 3px 14px; color: #fff; font-family: var(--font-head);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
+.colorchip[style*='yellow'] { color: #2b1d00; text-shadow: none; }
+
+.status { padding: 6px 18px; border-radius: 99px; background: rgba(0, 0, 0, .3); border: 1px solid var(--line);
+  font-family: var(--font-head); font-size: 17px; font-weight: 600; max-width: 94%; }
+.status.you { background: linear-gradient(180deg, #ffd75e, #f5a300); color: #2b1d00; border: 0; }
+.log { opacity: .8; }
+
+/* ---------- seats, avatars ---------- */
+.avatar { display: inline-grid; place-items: center; border-radius: 50%; color: #fff; font-family: var(--font-head); font-weight: 700;
+  border: 2px solid rgba(255, 255, 255, .85); flex: none; box-shadow: 0 2px 6px rgba(0, 0, 0, .4); }
+.opp { background: rgba(8, 30, 20, .75); border-radius: 14px; padding: 8px 12px; gap: 3px; min-width: 104px; }
+.opp.turn { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 194, 51, .22), 0 0 22px rgba(255, 194, 51, .4); }
+.oname { font-family: var(--font-head); font-weight: 600; }
+.ominifan { display: flex; align-items: center; min-height: 22px; }
+.ominifan i { position: relative; width: 14px; height: 21px; border-radius: 3px; background: #151515; border: 1.5px solid #fff;
+  margin-left: -8px; box-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+.ominifan i:first-child { margin-left: 0; }
+.ominifan i::after { content: ''; position: absolute; inset: 5px 2px; background: var(--red); border-radius: 50%; transform: rotate(-24deg); }
+.ominifan b { margin-left: 8px; font-size: 13px; font-family: var(--font-head); }
+.unotag { font-family: var(--font-head); }
+.roomtag { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-head); background: rgba(0, 0, 0, .28);
+  padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line); color: var(--text); }
+.roomtag em { font-style: normal; color: var(--muted); }
+
+/* ---------- action buttons ---------- */
+button.uno { background: radial-gradient(circle at 30% 25%, #ff7a6e, #d4141a 72%); border: 3px solid #fff; border-radius: 999px;
+  padding: 8px 26px; font-size: 22px; color: #fff; text-shadow: 0 2px 0 rgba(0, 0, 0, .35); box-shadow: 0 4px 0 #8c0c10; }
+button.catch { border: 0; }
+
+/* ---------- timer ---------- */
+.timerbar { height: 9px; background: rgba(0, 0, 0, .4); }
+.timerbar i { background: linear-gradient(90deg, #2fa44f, #8bd450); }
+.timer.mine .timerbar i { background: linear-gradient(90deg, #f5a300, #ffd75e); }
+.timer.urgent .timerbar i { background: linear-gradient(90deg, #c4161c, #ff6b5e); }
+
+/* ---------- lobby, admin, modals ---------- */
+.members li { display: flex; align-items: center; gap: 10px; justify-content: flex-start; background: rgba(0, 0, 0, .28); }
+.members .mname { flex: 1; font-weight: 700; }
+.members li.away { opacity: .55; }
+.host { color: var(--accent); display: inline-flex; align-items: center; margin-left: 4px; }
+.offline { color: var(--muted); font-size: 12px; font-style: normal; }
+.roomcode b { font-family: var(--font-head); letter-spacing: 10px; color: var(--accent); }
+.me-chip { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
+.adminbadge { font-style: normal; font-size: 11px; background: var(--accent); color: #2b1d00; padding: 1px 8px; border-radius: 99px;
+  font-weight: 700; text-transform: uppercase; }
+.users li, .board li { background: rgba(0, 0, 0, .28); }
+.urow .uname { display: inline-flex; align-items: center; }
+.trophy { display: grid; place-items: center; color: var(--accent); }
+.points { color: var(--accent); font-family: var(--font-head); font-size: 22px; margin: 0; }
+.bar i { background: linear-gradient(90deg, #f5a300, #ffd75e); }
+.swatch { border: 3px solid #fff; }
+.swatch:hover { transform: scale(1.06); }
+.toast { background: rgba(8, 30, 20, .95); font-family: var(--font-head); }
+
+/* ---------- keyframes ---------- */
+@keyframes pageIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes tileDrop { from { opacity: 0; transform: translateY(-90px) rotate(-35deg) scale(.7); } to { opacity: 1; transform: rotate(var(--r)); } }
+@keyframes bob { 50% { transform: translateY(-6px) rotate(calc(var(--r) * -1)); } }
+@keyframes throwIn { 0% { transform: translate(-50px, 130px) rotate(calc(var(--tilt, 0deg) - 40deg)) scale(1.35); opacity: .3; }
+  70% { transform: rotate(var(--tilt, 0deg)) scale(.97); opacity: 1; } 100% { transform: rotate(var(--tilt, 0deg)); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes glowPulse { 50% { opacity: .85; transform: scale(1.06); } }
+@keyframes youPulse { 50% { transform: scale(1.05); box-shadow: 0 0 22px rgba(255, 194, 51, .7); } }
+@keyframes breathe { 50% { transform: translateY(-5px); } }
+@keyframes shine { 0%, 55% { transform: translateX(-130%); } 100% { transform: translateX(130%); } }
+@keyframes trophyBounce { 50% { transform: translateY(-9px) rotate(-4deg); } }
+@keyframes rise { from { transform: translateY(0) rotate(var(--rot)); } to { transform: translateY(-150vh) rotate(calc(var(--rot) + 150deg)); } }
+@keyframes tickShake { 50% { transform: scale(1.25); } }
+
+.banner { font-family: var(--font-head); position: relative; z-index: 60; }
+.banner button { min-height: 28px; padding: 2px 12px; margin-left: 10px; font-size: 13px; }
+
+/* phones held sideways: squeeze everything so table + hand fit without the hand covering the piles */
+@media (max-height: 520px) and (orientation: landscape) {
+  .game { gap: 2px; padding-top: 4px; }
+  .topbar { min-height: 0; } .topbar button { min-height: 30px; padding: 3px 10px; }
+  .opp { padding: 3px 8px; min-width: 74px; } .opp .avatar { display: none; } .oscore { display: none; }
+  .stage { padding: 12px 30px; }
+  .pile small { display: none; }
+  .colorchip { padding: 1px 10px; font-size: 11px; }
+  .status { font-size: 14px; padding: 3px 12px; }
+  .timer { flex-direction: row; gap: 8px; width: min(300px, 60%); } .timerbar { flex: 1; }
+  .actions { min-height: 0; }
+  .me { position: static; background: none; }
+  .hand { padding-top: 14px; padding-bottom: 6px; }
+  .table { gap: 4px; }
+}
+
+/* short windows (laptops, landscape tablets): keep the whole table + hand on screen without scrolling */
+@media (min-width: 701px) and (max-height: 880px) {
+  .piles .card, .discard { width: 74px; height: 110px; }
+  .piles .card .center { font-size: 40px; }
+  .piles .card.back span { font-size: 15px; padding: 9px 5px; }
+  .stage { padding: 20px 38px; }
+  .table { gap: 6px; min-height: 0; }
+  .log { display: none; }
+  .game { gap: 4px; }
+  html[data-gfx='high'] .hand { padding-top: 30px; }
+  .me { padding-bottom: 6px; }
+}
+@media (min-width: 701px) and (max-height: 700px) {
+  .opp { padding: 4px 10px; } .opp .avatar { display: none; }
+  .piles .card, .discard { width: 60px; height: 90px; }
+  .piles .card .center { font-size: 32px; }
+  .status { font-size: 15px; padding: 4px 14px; }
+}
+
+/* =====================================================================
+   HIGH graphics only: depth, glow, looping motion
+   ===================================================================== */
+html[data-gfx='high'] .panel, html[data-gfx='high'] .modal { backdrop-filter: blur(10px); box-shadow: 0 22px 50px rgba(0, 0, 0, .45); }
+html[data-gfx='high'] .modal-bg { backdrop-filter: blur(5px); }
+html[data-gfx='high'] .logo .tile { animation: tileDrop .6s cubic-bezier(.3, 1.4, .5, 1) calc(var(--i) * .07s) backwards,
+  bob 4.5s ease-in-out calc(.9s + var(--i) * -.45s) infinite; }
+html[data-gfx='high'] .logo .tile:hover { animation-play-state: paused; transform: translateY(-8px) rotate(0) scale(1.1); }
+html[data-gfx='high'] .card { box-shadow: 0 6px 14px rgba(0, 0, 0, .5); }
+html[data-gfx='high'] .drawpile .card { box-shadow: 2px 2px 0 #222, 4px 4px 0 #1a1a1a, 6px 6px 0 #111, 9px 12px 18px rgba(0, 0, 0, .7); }
+html[data-gfx='high'] .drawpile.ready .card { animation: breathe 1.7s ease-in-out infinite;
+  box-shadow: 0 0 0 3px var(--accent), 0 0 22px rgba(255, 194, 51, .7), 2px 2px 0 #222, 5px 5px 0 #111; }
+html[data-gfx='high'] .dirring { animation: spin 24s linear infinite; }
+html[data-gfx='high'] .dirring[data-dir='-1'] { animation-direction: reverse; }
+html[data-gfx='high'] .table.mine .stage::before { animation: glowPulse 2.6s ease-in-out infinite; }
+html[data-gfx='high'] .status.you { animation: youPulse 1.8s ease-in-out infinite; }
+html[data-gfx='high'] .card.playable { box-shadow: 0 0 0 3px var(--accent), 0 0 20px rgba(255, 194, 51, .6), 0 8px 16px rgba(0, 0, 0, .5); }
+html[data-gfx='high'] .card.playable::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, .6) 50%, transparent 62%); animation: shine 3s ease-in-out infinite; }
+html[data-gfx='high'] .trophy { animation: trophyBounce 1.3s ease-in-out infinite; filter: drop-shadow(0 0 14px rgba(255, 194, 51, .75)); }
+html[data-gfx='high'] .timer.urgent b { display: inline-block; animation: tickShake .5s ease-in-out infinite; }
+html[data-gfx='high'] button.uno { box-shadow: 0 4px 0 #8c0c10, 0 0 26px rgba(232, 49, 47, .65); }
+html[data-gfx='high'] .opp.turn { animation: none; box-shadow: 0 0 0 3px rgba(255, 194, 51, .22), 0 0 26px rgba(255, 194, 51, .55); }
+
+.floaters { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.floater { position: absolute; bottom: -30%; border-radius: 10px; border: 3px solid rgba(255, 255, 255, .6); opacity: .17;
+  background: var(--c); animation: rise linear infinite; }
+.floater.red { --c: var(--red); } .floater.yellow { --c: var(--yellow); } .floater.green { --c: var(--green); } .floater.blue { --c: var(--blue); }
+
+/* the fanned hand (desktop + High): cards arc like a real hand */
+@media (min-width: 701px) {
+  html[data-gfx='high'] .hand { padding-top: 40px; gap: 0; }
+  html[data-gfx='high'] .hand .card { margin-left: -16px; transform-origin: 50% 130%;
+    transform: translateY(var(--ty, 0)) rotate(var(--rot, 0)); transition: transform .18s ease-out; }
+  html[data-gfx='high'] .hand .card:first-child { margin-left: 0; }
+  html[data-gfx='high'] .hand .card.playable { transform: translateY(calc(var(--ty, 0) - 22px)) rotate(var(--rot, 0)); }
+  html[data-gfx='high'] .hand .card:hover:not(:disabled) { transform: translateY(-40px) rotate(0) scale(1.1); z-index: 8; }
+  html[data-gfx='high'] .hand .card.sel { transform: translateY(-40px) rotate(0) scale(1.1) !important; }
+}
+
+/* =====================================================================
+   BALANCED: keep entrances, drop loops and heavy shadows
+   ===================================================================== */
+html[data-gfx='medium'] .card, html[data-gfx='medium'] .logo .tile { box-shadow: none; }
+html[data-gfx='medium'] .card.playable { box-shadow: 0 0 0 3px var(--accent); }
+html[data-gfx='medium'] .drawpile:not(:disabled) .card { box-shadow: 0 0 0 3px var(--accent); }
+
+/* =====================================================================
+   DATA SAVER: flat colours, no effects (animations already disabled globally)
+   ===================================================================== */
+html[data-gfx='low'] body { background: #0b2e20; }
+html[data-gfx='low'] .card { background: var(--c, #333); }
+html[data-gfx='low'] .card.wild { background: #16161a; }
+html[data-gfx='low'] .logo .tile { background: var(--c); box-shadow: none; }
+html[data-gfx='low'] .stage::before, html[data-gfx='low'] .floaters { display: none; }
+html[data-gfx='low'] .panel, html[data-gfx='low'] .modal { background: #0f2c1f; }
+html[data-gfx='low'] .discard .topcard { animation: none; }
+html[data-gfx='low'] .card.back span { box-shadow: none; }

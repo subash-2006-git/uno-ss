@@ -9,6 +9,9 @@ export const WINNING_SCORE = 500;
 export const HAND_SIZE = 7;
 export const UNO_GRACE_MS = 1500;
 
+// Quick reactions players can send (the client maps each id to a picture; the server only accepts these ids).
+export const EMOTE_IDS = ['thumbs', 'laugh', 'wow', 'angry', 'clap', 'fire', 'cry', 'party'];
+
 const ACTIONS = ['skip', 'reverse', 'draw2'];
 const err = (error) => ({ ok: false, error });
 const OK = { ok: true };
@@ -92,7 +95,7 @@ export function createGame(players, rng = Math.random) {
     throw new Error(`UNO needs ${MIN_PLAYERS}-${MAX_PLAYERS} players`);
   }
   const s = {
-    players: players.map((p) => ({ id: p.id, name: p.name, hand: [], score: 0, uno: false })),
+    players: players.map((p) => ({ id: p.id, name: p.name, hand: [], score: 0, uno: false, roundsWon: 0 })),
     deck: [], discard: [], dir: 1, color: 'red', turn: 0, round: 0,
     phase: 'play', drawnCardId: null, pending: null, unoVuln: null,
     roundResult: null, winnerId: null, log: [],
@@ -134,6 +137,7 @@ function endRound(s, winnerIdx) {
   const w = s.players[winnerIdx];
   const points = s.players.reduce((sum, p, i) => (i === winnerIdx ? sum : sum + handPoints(p.hand)), 0);
   w.score += points;
+  w.roundsWon = (w.roundsWon ?? 0) + 1;
   s.roundResult = { winnerId: w.id, points };
   s.unoVuln = null; s.pending = null; s.drawnCardId = null;
   if (w.score >= WINNING_SCORE) { s.phase = 'matchOver'; s.winnerId = w.id; }
@@ -261,6 +265,16 @@ export function catchUno(s, byId, rng = Math.random, now = Date.now()) {
   if (idx < 0 || s.players[idx].hand.length !== 1) return err('Too late');
   giveCards(s, idx, 2, rng);
   log(s, `${s.players[idx].name} forgot to say UNO and draws 2`);
+  return OK;
+}
+
+// A late joiner takes a seat between rounds (score starts at 0). Dealt in by the next startRound.
+export function addPlayer(s, { id, name }) {
+  if (s.phase !== 'roundOver') return err('New players can only join between rounds');
+  if (s.players.length >= MAX_PLAYERS) return err('Table is full');
+  if (s.players.some((p) => p.id === id)) return err('Already seated');
+  s.players.push({ id, name, hand: [], score: 0, uno: false, roundsWon: 0 });
+  log(s, `${name} joined the table`);
   return OK;
 }
 

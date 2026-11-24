@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
+import Avatar from '../components/Avatar.jsx';
+import Icon from '../components/Icon.jsx';
 
 const ORDER = { pending: 0, approved: 1, rejected: 2 };
 
@@ -45,7 +47,8 @@ export default function Admin({ token, onBack, notify }) {
           {sorted.map((u) => (
             <li key={u.id}>
               <div className="urow">
-                <span className="uname">{u.username}{u.isAdmin ? ' 👑' : ''}</span>
+                <Avatar name={u.username} size={28} />
+                <span className="uname">{u.username}{u.isAdmin && <span className="host"><Icon name="crown" size={15} /></span>}</span>
                 <span className={`pill ${u.status}`}>{u.status}</span>
                 <span className="uactions">
                   {u.status !== 'approved' && <button className="primary" onClick={() => run(u.id, 'approve', undefined, `${u.username} approved`)}>Approve</button>}
